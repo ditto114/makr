@@ -184,6 +184,13 @@ def _locate_image(reference_image: Image.Image, confidence: Optional[float]):
             return pyautogui.locateOnScreen(reference_image, confidence=float(confidence))
         return pyautogui.locateOnScreen(reference_image)
     except Exception as exc:  # pragma: no cover - pyautogui 내부 예외 처리
+        # PyAutoGUI는 찾지 못한 경우 ImageNotFoundException을 던질 수 있으므로
+        # 이를 시간 초과 루프로 처리할 수 있도록 None을 반환한다.
+        image_not_found_exc = getattr(pyautogui, "ImageNotFoundException", None)
+        if image_not_found_exc and isinstance(exc, image_not_found_exc):
+            return None
+        if exc.__class__.__name__ == "ImageNotFoundException":
+            return None
         raise ExecutionError(f"이미지 검색 중 오류: {exc}")
 
 
