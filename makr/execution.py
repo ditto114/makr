@@ -1,6 +1,8 @@
 """매크로 실행 로직."""
 from __future__ import annotations
 
+import select
+import socket
 import time
 from dataclasses import dataclass, field
 from typing import List, Optional
@@ -112,6 +114,60 @@ def _evaluate_condition(node: MacroNode, context: ExecutionContext) -> bool:
                 context.log.add("- 이미지 인식 시간 초과")
                 return False
             time.sleep(max(interval, 0.1))
+    if condition_type == "packet":
+        ip = (config.get("ip") or "").strip()
+        detect_text = config.get("detect_text", "")
+        if not ip:
+            raise ExecutionError("패킷 감지 IP가 설정되지 않았습니다.")
+        try:
+            port = int(config.get("port"))
+        except (TypeError, ValueError) as exc:
+            raise ExecutionError("패킷 감지 포트가 올바르지 않습니다.") from exc
+        timeout = float(config.get("timeout", 0.0))
+        if not detect_text:
+            raise ExecutionError("감지할 문자열을 입력하세요.")
+        detect_bytes = detect_text.encode("utf-8")
+        context.log.add(
+            f"- 패킷 감지 시작: {ip}:{port}, 타임아웃 {timeout if timeout > 0 else '무제한'}초"
+        )
+        deadline = time.time() + timeout if timeout > 0 else None
+        buffer = bytearray()
+        connection_timeout = min(max(timeout, 0.0), 5.0) if timeout > 0 else 5.0
+        try:
+            with socket.create_connection((ip, port), timeout=connection_timeout or None) as sock:
+                sock.setblocking(False)
+                while True:
+                    if context.stop_requested:
+                        context.log.add("- 패킷 감지가 중지 요청으로 종료되었습니다.")
+                        return False
+                    if deadline is not None and time.time() >= deadline:
+                        context.log.add("- 패킷 감지 타임아웃")
+                        return False
+                    wait_timeout = 0.5
+                    if deadline is not None:
+                        remaining = max(deadline - time.time(), 0.0)
+                        wait_timeout = min(max(remaining, 0.0), 0.5)
+                    ready, _, _ = select.select([sock], [], [], wait_timeout)
+                    if not ready:
+                        continue
+                    try:
+                        chunk = sock.recv(4096)
+                    except BlockingIOError:
+                        continue
+                    except OSError as exc:
+                        raise ExecutionError(f"패킷 수신 중 오류: {exc}") from exc
+                    if not chunk:
+                        context.log.add("- 패킷 감지 대상 연결이 종료되었습니다.")
+                        return False
+                    buffer.extend(chunk)
+                    if detect_bytes in buffer:
+                        context.log.add("- 감지 문자열이 수신되었습니다.")
+                        return True
+                    # 버퍼 크기 제한 (1MB 초과 시 뒤쪽만 유지)
+                    if len(buffer) > 1_048_576:
+                        del buffer[: len(buffer) - 1024]
+        except OSError as exc:
+            raise ExecutionError(f"패킷 감지 연결 실패: {exc}") from exc
     raise ExecutionError(f"지원되지 않는 조건 유형: {condition_type}")
 
 
@@ -142,8 +198,20 @@ def _execute_action(node: MacroNode, context: ExecutionContext) -> None:
             if not location:
                 raise ExecutionError("이미지를 찾을 수 없습니다: %s" % image_path)
             center = pyautogui.center(location)
-            pyautogui.click(center.x, center.y, clicks=clicks, interval=interval, button=button)
-            context.log.add(f"- 이미지 클릭: {image_path}")
+            try:
+                offset_x = int(config.get("offset_x", 0))
+            except (TypeError, ValueError):
+                offset_x = 0
+            try:
+                offset_y = int(config.get("offset_y", 0))
+            except (TypeError, ValueError):
+                offset_y = 0
+            click_x = center.x + offset_x
+            click_y = center.y + offset_y
+            pyautogui.click(click_x, click_y, clicks=clicks, interval=interval, button=button)
+            context.log.add(
+                f"- 이미지 클릭: {image_path} (좌표 {click_x}, {click_y}, 오프셋 {offset_x}, {offset_y})"
+            )
             return
         raise ExecutionError(f"지원되지 않는 마우스 클릭 모드: {mode}")
 
