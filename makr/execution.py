@@ -5,6 +5,8 @@ import time
 from dataclasses import dataclass, field
 from typing import List, Optional
 
+from PIL import Image
+
 from .macro import Macro, MacroNode
 
 try:
@@ -97,11 +99,12 @@ def _evaluate_condition(node: MacroNode, context: ExecutionContext) -> bool:
             raise ExecutionError("이미지 경로가 지정되지 않았습니다.")
         timeout = float(config.get("timeout", 30))
         interval = float(config.get("interval", 0.5))
-        confidence = config.get("confidence")
+        confidence = _resolve_confidence(config)
+        reference_image = _prepare_image(image_path)
         context.log.add(f"- 이미지 인식 대기: {image_path}")
         start = time.time()
         while True:
-            location = _locate_image(image_path, confidence)
+            location = _locate_image(reference_image, confidence)
             if location:
                 context.log.add(f"- 이미지 인식 성공: {location}")
                 return True
@@ -133,8 +136,9 @@ def _execute_action(node: MacroNode, context: ExecutionContext) -> None:
             return
         if mode == "image":
             image_path = config.get("image_path")
-            confidence = config.get("confidence")
-            location = _locate_image(image_path, confidence)
+            confidence = _resolve_confidence(config)
+            reference_image = _prepare_image(image_path)
+            location = _locate_image(reference_image, confidence)
             if not location:
                 raise ExecutionError("이미지를 찾을 수 없습니다: %s" % image_path)
             center = pyautogui.center(location)
@@ -156,11 +160,12 @@ def _execute_action(node: MacroNode, context: ExecutionContext) -> None:
 
     if action_type == "image_click":
         image_path = config.get("image_path")
-        confidence = config.get("confidence")
+        confidence = _resolve_confidence(config)
         clicks = int(config.get("clicks", 1))
         interval = float(config.get("interval", 0.1))
         button = config.get("button", "left")
-        location = _locate_image(image_path, confidence)
+        reference_image = _prepare_image(image_path)
+        location = _locate_image(reference_image, confidence)
         if not location:
             raise ExecutionError(f"이미지를 찾을 수 없습니다: {image_path}")
         center = pyautogui.center(location)
@@ -171,14 +176,44 @@ def _execute_action(node: MacroNode, context: ExecutionContext) -> None:
     raise ExecutionError(f"지원되지 않는 행동 유형: {action_type}")
 
 
-def _locate_image(image_path: Optional[str], confidence: Optional[float]):
+def _locate_image(reference_image: Image.Image, confidence: Optional[float]):
     if pyautogui is None:
         raise ExecutionError("pyautogui를 사용할 수 없습니다. GUI 환경을 확인하세요.")
+    try:
+        if confidence is not None:
+            return pyautogui.locateOnScreen(reference_image, confidence=float(confidence))
+        return pyautogui.locateOnScreen(reference_image)
+    except Exception as exc:  # pragma: no cover - pyautogui 내부 예외 처리
+        # PyAutoGUI는 찾지 못한 경우 ImageNotFoundException을 던질 수 있으므로
+        # 이를 시간 초과 루프로 처리할 수 있도록 None을 반환한다.
+        image_not_found_exc = getattr(pyautogui, "ImageNotFoundException", None)
+        if image_not_found_exc and isinstance(exc, image_not_found_exc):
+            return None
+        if exc.__class__.__name__ == "ImageNotFoundException":
+            return None
+        raise ExecutionError(f"이미지 검색 중 오류: {exc}")
+
+
+def _prepare_image(image_path: Optional[str]) -> Image.Image:
     if not image_path:
         raise ExecutionError("이미지 경로가 설정되지 않았습니다.")
     try:
-        if confidence is not None:
-            return pyautogui.locateOnScreen(image_path, confidence=float(confidence))
-        return pyautogui.locateOnScreen(image_path)
-    except Exception as exc:  # pragma: no cover - pyautogui 내부 예외 처리
-        raise ExecutionError(f"이미지 검색 중 오류: {exc}")
+        with Image.open(image_path) as source:
+            return source.copy()
+    except FileNotFoundError:
+        raise ExecutionError(f"이미지를 찾을 수 없습니다: {image_path}")
+    except Exception as exc:  # pragma: no cover - Pillow 내부 예외 처리
+        raise ExecutionError(f"이미지를 불러오는 중 오류: {exc}")
+
+
+def _resolve_confidence(config: dict, default: float = 0.8) -> float:
+    value = config.get("confidence")
+    if value is None or value == "":
+        return default
+    try:
+        confidence = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ExecutionError(f"인식 정확도 값이 올바르지 않습니다: {exc}")
+    if not 0 <= confidence <= 1:
+        raise ExecutionError("인식 정확도는 0과 1 사이여야 합니다.")
+    return confidence
