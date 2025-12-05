@@ -208,12 +208,27 @@ def build_gui() -> None:
             return
 
         status_var.set("이미지 위치를 찾는 중입니다...")
+        opencv_missing = False
+
+        def locate_image() -> pyautogui.Box | None:
+            nonlocal opencv_missing
+            try:
+                return pyautogui.locateOnScreen(str(path), confidence=0.8)
+            except TypeError as exc:
+                if "confidence" in str(exc).lower():
+                    opencv_missing = True
+                    return pyautogui.locateOnScreen(str(path))
+                raise
+
         try:
-            location = pyautogui.locateOnScreen(str(path), confidence=0.8)
+            location = locate_image()
         except Exception as exc:  # pragma: no cover - pyautogui 환경 오류
             messagebox.showerror("이미지 검색 오류", f"이미지를 찾을 수 없습니다: {exc}")
             status_var.set("이미지 검색에 실패했습니다.")
             return
+
+        if opencv_missing:
+            status_var.set("OpenCV 없이 기본 이미지 검색을 실행했습니다. 결과가 제한될 수 있습니다.")
 
         if not location:
             messagebox.showwarning("미검출", "화면에서 이미지를 찾지 못했습니다.")
