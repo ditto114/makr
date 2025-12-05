@@ -85,6 +85,7 @@ def build_gui() -> None:
 
     status_var = tk.StringVar()
     image_path_var = tk.StringVar()
+    repeat_delay_var = tk.StringVar(value="750")
     image_preview: tk.Label | None = None
     repeat_running = False
     repeat_job_id: str | None = None
@@ -156,6 +157,14 @@ def build_gui() -> None:
 
     reset_button = tk.Button(button_frame, text="다시 (F2)", width=12, command=controller.reset_and_run_first)
     reset_button.pack(side="left", padx=5)
+
+    delay_frame = tk.Frame(root)
+    delay_frame.pack(fill="x", padx=10)
+
+    tk.Label(delay_frame, text="F3 반복 딜레이 (ms)", width=16, anchor="w").pack(side="left")
+    delay_entry = tk.Entry(delay_frame, textvariable=repeat_delay_var, width=8)
+    delay_entry.pack(side="left", padx=(0, 6))
+    tk.Label(delay_frame, text="반복 실행 사이 대기 시간을 설정합니다.").pack(side="left")
 
     image_frame = tk.Frame(root, padx=10, pady=10, bd=1, relief="groove")
     image_frame.pack(fill="x", padx=10, pady=(0, 10))
@@ -262,17 +271,37 @@ def build_gui() -> None:
         elif key == keyboard.Key.f3:
             root.after(0, toggle_repeat)
 
+    def get_repeat_delay_ms() -> int:
+        try:
+            delay_ms = int(float(repeat_delay_var.get()))
+        except (tk.TclError, ValueError):
+            messagebox.showerror("반복 딜레이 오류", "반복 딜레이를 숫자로 입력하세요.")
+            delay_ms = 750
+            repeat_delay_var.set(str(delay_ms))
+        if delay_ms < 0:
+            messagebox.showerror("반복 딜레이 오류", "반복 딜레이는 0 이상이어야 합니다.")
+            delay_ms = 0
+            repeat_delay_var.set("0")
+        return delay_ms
+
     def schedule_next_repeat() -> None:
         nonlocal repeat_job_id
-        repeat_job_id = root.after(750, run_repeat_cycle)
+        delay_ms = get_repeat_delay_ms()
+        repeat_job_id = root.after(delay_ms, run_repeat_cycle)
 
     def run_repeat_cycle() -> None:
         if not repeat_running:
             return
         controller.reset_and_run_first()
-        controller.run_step()
-        if repeat_running:
-            schedule_next_repeat()
+
+        def run_first_step_after_delay() -> None:
+            if not repeat_running:
+                return
+            controller.run_step()
+            if repeat_running:
+                schedule_next_repeat()
+
+        root.after(200, run_first_step_after_delay)
 
     def stop_repeat() -> None:
         nonlocal repeat_running, repeat_job_id
@@ -285,7 +314,8 @@ def build_gui() -> None:
     def start_repeat() -> None:
         nonlocal repeat_running
         repeat_running = True
-        status_var.set("F2 → F1 반복을 시작합니다.")
+        delay_ms = get_repeat_delay_ms()
+        status_var.set(f"F2 → F1 반복을 시작합니다. (딜레이 {delay_ms}ms)")
         run_repeat_cycle()
 
     def toggle_repeat() -> None:
