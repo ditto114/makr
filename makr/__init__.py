@@ -1,12 +1,3 @@
-"""makr - GUI 기반 매크로 제작 및 실행 도구."""
+"""macOS 자동 클릭 매크로 GUI."""
 
-from .macro import Macro, MacroNode
-from .execution import execute_macro, ExecutionContext, ExecutionLog
-
-__all__ = [
-    "Macro",
-    "MacroNode",
-    "execute_macro",
-    "ExecutionContext",
-    "ExecutionLog",
-]
+__all__ = ["app"]
