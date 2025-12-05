@@ -6,10 +6,14 @@ macOS에서 최상단에 고정된 창을 제공하며, 실행/다시 버튼으�
 
 import time
 import tkinter as tk
+from pathlib import Path
 from tkinter import messagebox
 
+from PIL import Image, ImageTk
 import pyautogui
 from pynput import keyboard, mouse
+
+from .gui import capture_image_via_drag
 
 
 class MacroController:
@@ -80,6 +84,8 @@ def build_gui() -> None:
     root.attributes("-topmost", True)
 
     status_var = tk.StringVar()
+    image_path_var = tk.StringVar()
+    image_preview: tk.Label | None = None
 
     entries: dict[str, tuple[tk.Entry, tk.Entry]] = {}
     capture_listener: mouse.Listener | None = None
@@ -148,6 +154,85 @@ def build_gui() -> None:
 
     reset_button = tk.Button(button_frame, text="다시 (F2)", width=12, command=controller.reset_and_run_first)
     reset_button.pack(side="left", padx=5)
+
+    image_frame = tk.Frame(root, padx=10, pady=10, bd=1, relief="groove")
+    image_frame.pack(fill="x", padx=10, pady=(0, 10))
+
+    preview_label = tk.Label(image_frame, text="등록된 이미지가 없습니다.", width=40, anchor="w")
+    preview_label.grid(row=0, column=0, columnspan=2, sticky="w")
+
+    preview_canvas = tk.Label(image_frame, text="미리보기 없음", width=50, height=8, relief="sunken", anchor="center")
+    preview_canvas.grid(row=1, column=0, columnspan=2, pady=(6, 0), sticky="ew")
+
+    def update_preview(path: Path) -> None:
+        nonlocal image_preview
+        try:
+            image = Image.open(path)
+        except Exception as exc:  # pragma: no cover - 로컬 파일/이미지 오류 처리
+            messagebox.showerror("미리보기 오류", f"이미지를 불러올 수 없습니다: {exc}")
+            image_preview = None
+            preview_canvas.config(text="미리보기 없음", image="")
+            return
+
+        max_width, max_height = 360, 200
+        width, height = image.size
+        scale = min(max_width / width, max_height / height, 1)
+        if scale != 1:
+            new_size = (int(width * scale), int(height * scale))
+            image = image.resize(new_size, Image.LANCZOS)
+        photo = ImageTk.PhotoImage(image)
+        preview_canvas.config(image=photo, text="")
+        preview_canvas.image = photo  # type: ignore[attr-defined]
+        image_preview = preview_canvas
+        preview_label.config(text=f"등록된 이미지: {path.name}")
+
+    def capture_image() -> None:
+        path = capture_image_via_drag(root)
+        if not path:
+            return
+        image_path_var.set(str(path))
+        update_preview(path)
+        image_click_button.config(state="normal")
+        status_var.set(f"이미지가 등록되었습니다: {path}")
+
+    def click_registered_image() -> None:
+        image_path = image_path_var.get()
+        if not image_path:
+            messagebox.showinfo("이미지 필요", "먼저 이미지를 등록해주세요.")
+            return
+        path = Path(image_path)
+        if not path.exists():
+            messagebox.showerror("이미지 없음", "등록된 이미지 파일을 찾을 수 없습니다. 다시 캡쳐하세요.")
+            image_click_button.config(state="disabled")
+            preview_canvas.config(text="미리보기 없음", image="")
+            return
+
+        status_var.set("이미지 위치를 찾는 중입니다...")
+        try:
+            location = pyautogui.locateOnScreen(str(path), confidence=0.8)
+        except Exception as exc:  # pragma: no cover - pyautogui 환경 오류
+            messagebox.showerror("이미지 검색 오류", f"이미지를 찾을 수 없습니다: {exc}")
+            status_var.set("이미지 검색에 실패했습니다.")
+            return
+
+        if not location:
+            messagebox.showwarning("미검출", "화면에서 이미지를 찾지 못했습니다.")
+            status_var.set("이미지를 찾지 못했습니다.")
+            return
+
+        center = pyautogui.center(location)
+        pyautogui.click(center.x, center.y)
+        status_var.set(f"이미지 위치 클릭 완료: ({center.x}, {center.y})")
+
+    image_button = tk.Button(image_frame, text="이미지", width=10, command=capture_image)
+    image_button.grid(row=2, column=0, pady=(8, 0), sticky="w")
+
+    image_click_button = tk.Button(
+        image_frame, text="이미지 클릭", width=12, command=click_registered_image, state="disabled"
+    )
+    image_click_button.grid(row=2, column=1, pady=(8, 0), sticky="e")
+    image_frame.columnconfigure(0, weight=1)
+    image_frame.columnconfigure(1, weight=1)
 
     status_label = tk.Label(root, textvariable=status_var, fg="#006400")
     status_label.pack(pady=(0, 10))
