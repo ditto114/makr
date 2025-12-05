@@ -9,7 +9,7 @@ import tkinter as tk
 from tkinter import messagebox
 
 import pyautogui
-from pynput import mouse
+from pynput import keyboard, mouse
 
 
 class MacroController:
@@ -83,6 +83,7 @@ def build_gui() -> None:
 
     entries: dict[str, tuple[tk.Entry, tk.Entry]] = {}
     capture_listener: mouse.Listener | None = None
+    hotkey_listener: keyboard.Listener | None = None
 
     def add_coordinate_row(label_text: str, key: str) -> None:
         frame = tk.Frame(root)
@@ -142,14 +143,35 @@ def build_gui() -> None:
     button_frame = tk.Frame(root)
     button_frame.pack(pady=10)
 
-    run_button = tk.Button(button_frame, text="실행", width=10, command=controller.run_step)
+    run_button = tk.Button(button_frame, text="실행 (F1)", width=12, command=controller.run_step)
     run_button.pack(side="left", padx=5)
 
-    reset_button = tk.Button(button_frame, text="다시", width=10, command=controller.reset_and_run_first)
+    reset_button = tk.Button(button_frame, text="다시 (F2)", width=12, command=controller.reset_and_run_first)
     reset_button.pack(side="left", padx=5)
 
     status_label = tk.Label(root, textvariable=status_var, fg="#006400")
     status_label.pack(pady=(0, 10))
+
+    def on_hotkey_press(key: keyboard.Key) -> None:
+        if key == keyboard.Key.f1:
+            root.after(0, controller.run_step)
+        elif key == keyboard.Key.f2:
+            root.after(0, controller.reset_and_run_first)
+
+    def start_hotkey_listener() -> None:
+        nonlocal hotkey_listener
+        if hotkey_listener is not None:
+            return
+        hotkey_listener = keyboard.Listener(on_press=on_hotkey_press)
+        hotkey_listener.start()
+
+    def on_close() -> None:
+        if hotkey_listener is not None:
+            hotkey_listener.stop()
+        root.destroy()
+
+    start_hotkey_listener()
+    root.protocol("WM_DELETE_WINDOW", on_close)
 
     root.mainloop()
 
