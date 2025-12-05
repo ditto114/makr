@@ -86,6 +86,8 @@ def build_gui() -> None:
     status_var = tk.StringVar()
     image_path_var = tk.StringVar()
     image_preview: tk.Label | None = None
+    repeat_running = False
+    repeat_job_id: str | None = None
 
     entries: dict[str, tuple[tk.Entry, tk.Entry]] = {}
     capture_listener: mouse.Listener | None = None
@@ -257,6 +259,40 @@ def build_gui() -> None:
             root.after(0, controller.run_step)
         elif key == keyboard.Key.f2:
             root.after(0, controller.reset_and_run_first)
+        elif key == keyboard.Key.f3:
+            root.after(0, toggle_repeat)
+
+    def schedule_next_repeat() -> None:
+        nonlocal repeat_job_id
+        repeat_job_id = root.after(750, run_repeat_cycle)
+
+    def run_repeat_cycle() -> None:
+        if not repeat_running:
+            return
+        controller.reset_and_run_first()
+        controller.run_step()
+        if repeat_running:
+            schedule_next_repeat()
+
+    def stop_repeat() -> None:
+        nonlocal repeat_running, repeat_job_id
+        repeat_running = False
+        if repeat_job_id is not None:
+            root.after_cancel(repeat_job_id)
+            repeat_job_id = None
+        status_var.set("반복 실행을 종료했습니다.")
+
+    def start_repeat() -> None:
+        nonlocal repeat_running
+        repeat_running = True
+        status_var.set("F2 → F1 반복을 시작합니다.")
+        run_repeat_cycle()
+
+    def toggle_repeat() -> None:
+        if repeat_running:
+            stop_repeat()
+        else:
+            start_repeat()
 
     def start_hotkey_listener() -> None:
         nonlocal hotkey_listener
@@ -268,6 +304,7 @@ def build_gui() -> None:
     def on_close() -> None:
         if hotkey_listener is not None:
             hotkey_listener.stop()
+        stop_repeat()
         root.destroy()
 
     start_hotkey_listener()
