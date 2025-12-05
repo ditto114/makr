@@ -9,6 +9,7 @@ import tkinter as tk
 from tkinter import messagebox
 
 import pyautogui
+from pynput import mouse
 
 
 class MacroController:
@@ -81,6 +82,7 @@ def build_gui() -> None:
     status_var = tk.StringVar()
 
     entries: dict[str, tuple[tk.Entry, tk.Entry]] = {}
+    capture_listener: mouse.Listener | None = None
 
     def add_coordinate_row(label_text: str, key: str) -> None:
         frame = tk.Frame(root)
@@ -96,6 +98,38 @@ def build_gui() -> None:
         y_entry.insert(0, "0")
 
         entries[key] = (x_entry, y_entry)
+
+        def start_capture() -> None:
+            nonlocal capture_listener
+            if capture_listener is not None and capture_listener.running:
+                messagebox.showinfo("좌표 등록", "다른 좌표 등록이 진행 중입니다.")
+                return
+
+            status_var.set(f"{label_text} 등록: 원하는 위치를 클릭하세요.")
+            root.withdraw()
+
+            def on_click(x: float, y: float, button: mouse.Button, pressed: bool) -> bool:
+                if pressed and button == mouse.Button.left:
+                    root.after(0, finalize_capture, key, int(x), int(y))
+                    return False
+                return True
+
+            capture_listener = mouse.Listener(on_click=on_click)
+            capture_listener.start()
+
+        def finalize_capture(target_key: str, x_val: int, y_val: int) -> None:
+            nonlocal capture_listener
+            x_entry_local, y_entry_local = entries[target_key]
+            x_entry_local.delete(0, tk.END)
+            x_entry_local.insert(0, str(x_val))
+            y_entry_local.delete(0, tk.END)
+            y_entry_local.insert(0, str(y_val))
+            status_var.set(f"{label_text} 좌표가 등록되었습니다: ({x_val}, {y_val})")
+            root.deiconify()
+            capture_listener = None
+
+        register_button = tk.Button(frame, text="클릭으로 등록", command=start_capture)
+        register_button.pack(side="left", padx=(6, 0))
 
     tk.Label(root, text="좌표는 화면 기준 픽셀 단위로 입력하세요 (X, Y).", fg="#444").pack(pady=(10, 0))
 
