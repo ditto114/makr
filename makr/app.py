@@ -132,7 +132,7 @@ def build_gui() -> None:
     channel_names: set[str] = set(saved_state.get("channel_names", []))
 
     entries: dict[str, tuple[tk.Entry, tk.Entry]] = {}
-    packet_queue: deque[str] = deque()
+    packet_queue: deque[tuple[int, str]] = deque()
     packet_queue_lock = threading.Lock()
     packet_flush_job: str | None = None
     channel_cycle_running = False
@@ -316,7 +316,13 @@ def build_gui() -> None:
     channel_info_window: tk.Toplevel | None = None
     channel_treeview: ttk.Treeview | None = None
 
-    def append_packet_payload(payload: str, *, summary: str | None = None) -> None:
+    def format_timestamp(ts_ms: int) -> str:
+        seconds, milliseconds = divmod(ts_ms, 1000)
+        return f"{time.strftime('%H:%M:%S', time.localtime(seconds))}.{milliseconds:03d}"
+
+    def append_packet_group(
+        timestamp_ms: int, payloads: list[str], *, label_prefix: str | None = None
+    ) -> None:
         nonlocal packet_counter
 
         def _summary_text(text: str) -> str:
@@ -324,10 +330,15 @@ def build_gui() -> None:
             return (first_line[:80] + "…") if len(first_line) > 80 else first_line
 
         packet_counter += 1
-        parent_text = f"{packet_counter}. {summary or _summary_text(payload)}"
-        parent_id = packet_tree.insert("", "end", text=parent_text, open=False)
-        for line in payload.splitlines():
-            packet_tree.insert(parent_id, "end", text=line if line else "(빈 줄)")
+        prefix = f"{label_prefix} " if label_prefix else ""
+        parent_label = f"{packet_counter}. {prefix}{format_timestamp(timestamp_ms)} ({len(payloads)}개)"
+        parent_id = packet_tree.insert("", "end", text=parent_label, open=False)
+
+        for payload in payloads:
+            summary_id = packet_tree.insert(parent_id, "end", text=_summary_text(payload), open=False)
+            for line in payload.splitlines():
+                packet_tree.insert(summary_id, "end", text=line if line else "(빈 줄)")
+
         packet_items.append(parent_id)
         _trim_packet_items()
         packet_tree.see(parent_id)
@@ -359,8 +370,13 @@ def build_gui() -> None:
             batch = list(packet_queue)
             packet_queue.clear()
             packet_flush_job = None
-        for payload in batch:
-            append_packet_payload(payload)
+
+        grouped_payloads: dict[int, list[str]] = {}
+        for timestamp_ms, payload in batch:
+            grouped_payloads.setdefault(timestamp_ms, []).append(payload)
+
+        for timestamp_ms, payloads in grouped_payloads.items():
+            append_packet_group(timestamp_ms, payloads)
 
     def schedule_packet_flush() -> None:
         nonlocal packet_flush_job
@@ -368,16 +384,24 @@ def build_gui() -> None:
             return
         packet_flush_job = root.after(200, flush_packet_queue)
 
+    def matches_registered_keyword(payload: str) -> bool:
+        return any(keyword in payload for keyword in alert_keywords)
+
     def enqueue_packet_text(text: str) -> None:
-        with packet_queue_lock:
-            packet_queue.append(text)
-        root.after(0, schedule_packet_flush)
+        timestamp_ms = int(time.time() * 1000)
+        is_registered_match = matches_registered_keyword(text)
+        if is_registered_match:
+            with packet_queue_lock:
+                packet_queue.append((timestamp_ms, text))
+            root.after(0, schedule_packet_flush)
         root.after(0, handle_channel_detection, text)
         root.after(0, handle_channel_alert_detection, text)
-        root.after(0, extract_and_store_channel_names, text)
+        root.after(0, extract_and_store_channel_names, text, is_registered_match)
 
     def log_packet_alert(keyword: str, payload: str) -> None:
-        append_packet_payload(payload, summary=f"[알림] '{keyword}' 포함 패킷")
+        append_packet_group(
+            int(time.time() * 1000), [payload], label_prefix=f"[알림] '{keyword}'"
+        )
         print(f"[패킷 알림] '{keyword}' 문자열이 포함된 패킷이 감지되었습니다.")
 
     def refresh_alerts() -> None:
@@ -392,6 +416,8 @@ def build_gui() -> None:
             return
         if keyword not in alert_keywords:
             alert_keywords.append(keyword)
+            if packet_manager.running:
+                packet_manager.set_alerts(alert_keywords)
             refresh_alerts()
             alert_entry.delete(0, tk.END)
         else:
@@ -403,6 +429,8 @@ def build_gui() -> None:
             return
         keyword = alert_listbox.get(selection[0])
         alert_keywords.remove(keyword)
+        if packet_manager.running:
+            packet_manager.set_alerts(alert_keywords)
         refresh_alerts()
 
     def collect_app_state() -> dict:
@@ -541,16 +569,21 @@ def build_gui() -> None:
             channel_treeview.insert("", "end", text=f"{idx}. {name}")
 
     def log_new_channel(name: str) -> None:
-        append_packet_payload(f"채널명: {name}", summary=f"[채널] 새 채널 감지: {name}")
+        append_packet_group(
+            int(time.time() * 1000),
+            [f"채널명: {name}"],
+            label_prefix=f"[채널] 새 채널 감지: {name}",
+        )
         status_var.set("새 채널 감지")
 
-    def extract_and_store_channel_names(payload: str) -> None:
+    def extract_and_store_channel_names(payload: str, should_log_packet: bool = True) -> None:
         new_found = False
         for candidate in extract_channel_candidates(payload):
             if candidate not in channel_names:
                 channel_names.add(candidate)
                 new_found = True
-                log_new_channel(candidate)
+                if should_log_packet:
+                    log_new_channel(candidate)
         if new_found:
             refresh_channel_treeview()
 
