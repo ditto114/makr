@@ -9,6 +9,7 @@ import time
 import tkinter as tk
 from collections import deque
 from tkinter import messagebox, ttk
+from typing import Callable
 
 from makr.packet import PacketCaptureManager
 
@@ -19,10 +20,18 @@ from pynput import keyboard, mouse
 class MacroController:
     """실행 순서를 관리하고 GUI 콜백을 제공합니다."""
 
-    def __init__(self, entries: dict[str, tuple[tk.Entry, tk.Entry]], status_var: tk.StringVar) -> None:
+    def __init__(
+        self,
+        entries: dict[str, tuple[tk.Entry, tk.Entry]],
+        status_var: tk.StringVar,
+        click_delay_provider: Callable[[], int],
+        step_transition_delay_provider: Callable[[], int],
+    ) -> None:
         self.entries = entries
         self.status_var = status_var
         self.current_step = 1
+        self.click_delay_provider = click_delay_provider
+        self.step_transition_delay_provider = step_transition_delay_provider
         self._update_status()
 
     def _update_status(self) -> None:
@@ -41,6 +50,9 @@ class MacroController:
     def _click_point(self, point: tuple[int, int]) -> None:
         x_val, y_val = point
         pyautogui.click(x_val, y_val)
+
+    def _delay_seconds(self, delay_ms: int) -> float:
+        return max(delay_ms, 0) / 1000
 
     def run_step(self) -> None:
         """실행 버튼 콜백: 현재 단계 수행 후 다음 단계로 이동."""
@@ -67,7 +79,9 @@ class MacroController:
         if pos1 is None or pos2 is None:
             return
         self._click_point(pos1)
-        time.sleep(0.1)
+        click_delay_sec = self._delay_seconds(self.click_delay_provider())
+        if click_delay_sec:
+            time.sleep(click_delay_sec)
         self._click_point(pos2)
 
     def _run_step_two(self) -> None:
@@ -85,6 +99,8 @@ def build_gui() -> None:
 
     status_var = tk.StringVar()
     repeat_delay_var = tk.StringVar(value="750")
+    click_delay_var = tk.StringVar(value="100")
+    step_transition_delay_var = tk.StringVar(value="200")
     packet_status_var = tk.StringVar(value="패킷 캡쳐 중지됨")
     repeat_running = False
     repeat_job_id: str | None = None
@@ -155,7 +171,12 @@ def build_gui() -> None:
     add_coordinate_row("pos2", "pos2")
     add_coordinate_row("pos3", "pos3")
 
-    controller = MacroController(entries, status_var)
+    controller = MacroController(
+        entries,
+        status_var,
+        click_delay_provider=get_click_delay_ms,
+        step_transition_delay_provider=get_step_transition_delay_ms,
+    )
 
     button_frame = tk.Frame(root)
     button_frame.pack(pady=10)
@@ -166,13 +187,24 @@ def build_gui() -> None:
     reset_button = tk.Button(button_frame, text="다시 (F2)", width=12, command=controller.reset_and_run_first)
     reset_button.pack(side="left", padx=5)
 
-    delay_frame = tk.Frame(root)
-    delay_frame.pack(fill="x", padx=10)
+    delay_frame = tk.LabelFrame(root, text="딜레이 설정")
+    delay_frame.pack(fill="x", padx=10, pady=(0, 10))
 
-    tk.Label(delay_frame, text="F3 반복 딜레이 (ms)", width=16, anchor="w").pack(side="left")
-    delay_entry = tk.Entry(delay_frame, textvariable=repeat_delay_var, width=8)
-    delay_entry.pack(side="left", padx=(0, 6))
-    tk.Label(delay_frame, text="반복 실행 사이 대기 시간을 설정합니다.").pack(side="left")
+    def add_delay_input(label: str, var: tk.StringVar, description: str) -> None:
+        row = tk.Frame(delay_frame)
+        row.pack(fill="x", pady=3)
+
+        tk.Label(row, text=label, width=18, anchor="w").pack(side="left")
+        tk.Entry(row, textvariable=var, width=8).pack(side="left", padx=(0, 6))
+        tk.Label(row, text=description).pack(side="left")
+
+    add_delay_input("F3 반복 딜레이 (ms)", repeat_delay_var, "반복 실행 사이 대기 시간을 설정합니다.")
+    add_delay_input("1단계 클릭 간 (ms)", click_delay_var, "pos1 → pos2 클릭 사이 지연입니다.")
+    add_delay_input(
+        "1→2단계 전환 (ms)",
+        step_transition_delay_var,
+        "반복 실행 시 1단계 후 2단계로 넘어가기 전 대기 시간입니다.",
+    )
 
     status_label = tk.Label(root, textvariable=status_var, fg="#006400")
     status_label.pack(pady=(0, 10))
@@ -363,18 +395,26 @@ def build_gui() -> None:
         elif key == keyboard.Key.f3:
             root.after(0, toggle_repeat)
 
-    def get_repeat_delay_ms() -> int:
+    def _parse_delay_ms(var: tk.StringVar, label: str, fallback: int) -> int:
         try:
-            delay_ms = int(float(repeat_delay_var.get()))
+            delay_ms = int(float(var.get()))
         except (tk.TclError, ValueError):
-            messagebox.showerror("반복 딜레이 오류", "반복 딜레이를 숫자로 입력하세요.")
-            delay_ms = 750
-            repeat_delay_var.set(str(delay_ms))
+            messagebox.showerror(f"{label} 오류", f"{label}를 숫자로 입력하세요.")
+            delay_ms = fallback
         if delay_ms < 0:
-            messagebox.showerror("반복 딜레이 오류", "반복 딜레이는 0 이상이어야 합니다.")
+            messagebox.showerror(f"{label} 오류", f"{label}는 0 이상이어야 합니다.")
             delay_ms = 0
-            repeat_delay_var.set("0")
+        var.set(str(delay_ms))
         return delay_ms
+
+    def get_repeat_delay_ms() -> int:
+        return _parse_delay_ms(repeat_delay_var, "반복 딜레이", 750)
+
+    def get_click_delay_ms() -> int:
+        return _parse_delay_ms(click_delay_var, "1단계 클릭 딜레이", 100)
+
+    def get_step_transition_delay_ms() -> int:
+        return _parse_delay_ms(step_transition_delay_var, "1→2단계 전환 딜레이", 200)
 
     def schedule_next_repeat() -> None:
         nonlocal repeat_job_id
@@ -393,7 +433,8 @@ def build_gui() -> None:
             if repeat_running:
                 schedule_next_repeat()
 
-        root.after(200, run_first_step_after_delay)
+        transition_delay_ms = controller.step_transition_delay_provider()
+        root.after(transition_delay_ms, run_first_step_after_delay)
 
     def stop_repeat() -> None:
         nonlocal repeat_running, repeat_job_id
