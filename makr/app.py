@@ -679,7 +679,12 @@ def build_gui() -> None:
         elif key == keyboard.Key.f2:
             root.after(0, controller.reset_and_run_first)
         elif key == keyboard.Key.f3:
-            channel_detection_sequence.start()
+            if channel_detection_sequence.running:
+                channel_detection_sequence.stop()
+                status_var.set("F3 매크로가 종료되었습니다.")
+                controller._update_status()
+            else:
+                channel_detection_sequence.start()
 
     def start_hotkey_listener() -> None:
         nonlocal hotkey_listener
