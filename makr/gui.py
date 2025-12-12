@@ -1,16 +1,12 @@
 """Tkinter 기반 매크로 편집 및 실행 GUI."""
 from __future__ import annotations
 
-import datetime
 import threading
 import time
 import tkinter as tk
 from dataclasses import dataclass
-from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import Dict, List, Optional
-
-from PIL import Image, ImageTk
 
 from .execution import ExecutionContext, ExecutionError, execute_macro
 from .macro import Macro, MacroNode
@@ -20,184 +16,6 @@ try:
     import pyautogui
 except Exception:  # pragma: no cover - GUI 환경이 아닐 수 있음
     pyautogui = None  # type: ignore
-
-
-DEFAULT_CONFIDENCE = 0.8
-
-
-def _parse_confidence_value(raw: str, *, default: float = DEFAULT_CONFIDENCE) -> float:
-    """문자열 형태의 인식 정확도를 부동소수점 값으로 변환한다."""
-
-    text = (raw or "").strip()
-    if not text:
-        return default
-    try:
-        value = float(text)
-    except (TypeError, ValueError) as exc:  # pragma: no cover - 사용자 입력 오류
-        raise ValueError("인식 정확도는 숫자로 입력해야 합니다.") from exc
-    if not 0 <= value <= 1:
-        raise ValueError("인식 정확도는 0과 1 사이여야 합니다.")
-    return value
-
-
-def _save_captured_image(image: Image.Image) -> Path:
-    """캡쳐 이미지를 실행 폴더에 저장하고 경로를 반환한다."""
-
-    base_dir = Path.cwd()
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    counter = 0
-    while True:
-        suffix = f"_{counter}" if counter else ""
-        candidate = base_dir / f"capture_{timestamp}{suffix}.png"
-        if not candidate.exists():
-            image.save(candidate)
-            return candidate
-        counter += 1
-
-
-class ImageCaptureOverlay(tk.Toplevel):
-    """화면에서 드래그로 영역을 선택하는 오버레이."""
-
-    def __init__(self, master: tk.Widget, screenshot: Image.Image) -> None:
-        super().__init__(master)
-        self.withdraw()
-        self.overrideredirect(True)
-        self.attributes("-topmost", True)
-        self.configure(background="#000000")
-        self._photo = ImageTk.PhotoImage(screenshot)
-        self._region: Optional[tuple[int, int, int, int]] = None
-        self._start_x = 0
-        self._start_y = 0
-        width, height = screenshot.size
-        self.geometry(f"{width}x{height}+0+0")
-        self.canvas = tk.Canvas(self, highlightthickness=0, cursor="cross")
-        self.canvas.pack(fill="both", expand=True)
-        self.canvas.create_image(0, 0, image=self._photo, anchor="nw")
-        self._rect_id: Optional[int] = None
-        # 안내 문구
-        self.canvas.create_rectangle(10, 10, 420, 50, fill="#000000", outline="")
-        self.canvas.create_text(
-            20,
-            30,
-            text="드래그하여 영역 선택, ESC로 취소",
-            fill="#ffffff",
-            anchor="w",
-            font=("Arial", 12, "bold"),
-        )
-        self.canvas.bind("<ButtonPress-1>", self._on_press)
-        self.canvas.bind("<B1-Motion>", self._on_drag)
-        self.canvas.bind("<ButtonRelease-1>", self._on_release)
-        self.bind("<Escape>", self._on_cancel)
-
-    def capture(self) -> Optional[tuple[int, int, int, int]]:
-        self.deiconify()
-        self.lift()
-        self.grab_set()
-        self.focus_force()
-        self.wait_window(self)
-        return self._region
-
-    def _on_press(self, event: tk.Event) -> None:
-        self._start_x = int(event.x)
-        self._start_y = int(event.y)
-        if self._rect_id is not None:
-            self.canvas.delete(self._rect_id)
-        self._rect_id = self.canvas.create_rectangle(
-            self._start_x,
-            self._start_y,
-            self._start_x,
-            self._start_y,
-            outline="#00ff88",
-            width=2,
-        )
-
-    def _on_drag(self, event: tk.Event) -> None:
-        if self._rect_id is None:
-            return
-        current_x = int(event.x)
-        current_y = int(event.y)
-        self.canvas.coords(self._rect_id, self._start_x, self._start_y, current_x, current_y)
-
-    def _on_release(self, event: tk.Event) -> None:
-        if self._rect_id is None:
-            self._region = None
-        else:
-            end_x = int(event.x)
-            end_y = int(event.y)
-            self._region = (
-                min(self._start_x, end_x),
-                min(self._start_y, end_y),
-                max(self._start_x, end_x),
-                max(self._start_y, end_y),
-            )
-        self.grab_release()
-        self.destroy()
-
-    def _on_cancel(self, _event: tk.Event | None = None) -> None:
-        self._region = None
-        self.grab_release()
-        self.destroy()
-
-
-def capture_image_via_drag(parent: tk.Toplevel) -> Optional[Path]:
-    """드래그 방식으로 화면을 캡쳐하고 저장한 파일 경로를 반환한다."""
-
-    if pyautogui is None:
-        messagebox.showerror("캡쳐 불가", "pyautogui를 사용할 수 없습니다. GUI 환경을 확인하세요.", parent=parent)
-        return None
-
-    try:
-        parent.grab_release()
-    except tk.TclError:  # pragma: no cover - grab이 설정되지 않은 경우
-        pass
-
-    screenshot: Optional[Image.Image] = None
-    was_withdrawn = False
-    try:
-        if hasattr(parent, "withdraw"):
-            parent.withdraw()
-            was_withdrawn = True
-            parent.update_idletasks()
-        time.sleep(0.2)
-        screenshot = pyautogui.screenshot()
-    except Exception as exc:  # pragma: no cover - 환경별 스크린샷 오류
-        if was_withdrawn:
-            parent.deiconify()
-        messagebox.showerror("캡쳐 실패", f"화면을 캡쳐할 수 없습니다: {exc}", parent=parent)
-        try:
-            parent.grab_set()
-        except tk.TclError:
-            pass
-        parent.lift()
-        parent.focus_force()
-        return None
-
-    overlay = ImageCaptureOverlay(parent, screenshot)
-    region = overlay.capture()
-
-    if was_withdrawn:
-        parent.deiconify()
-    parent.lift()
-    try:
-        parent.grab_set()
-    except tk.TclError:
-        pass
-    parent.focus_force()
-
-    if not region:
-        return None
-
-    left, top, right, bottom = region
-    if right <= left or bottom <= top:
-        messagebox.showerror("캡쳐 실패", "유효한 영역을 선택하세요.", parent=parent)
-        return None
-
-    cropped = screenshot.crop((left, top, right, bottom))
-    try:
-        return _save_captured_image(cropped)
-    except Exception as exc:  # pragma: no cover - 파일 저장 예외
-        messagebox.showerror("저장 오류", f"이미지를 저장할 수 없습니다: {exc}", parent=parent)
-        return None
 
 
 class MacroEditorApp(tk.Tk):
@@ -737,55 +555,29 @@ class ConditionDialog(BaseDialog):
             container,
             textvariable=self.type_var,
             state="readonly",
-            values=("wait", "image", "packet"),
+            values=("wait", "packet"),
         )
         type_combo.grid(row=1, column=1, sticky="ew", pady=(8, 0))
         type_combo.bind("<<ComboboxSelected>>", lambda _e: self._update_fields())
 
-        # wait fields
         self.wait_frame = ttk.LabelFrame(container, text="대기 조건")
         self.wait_seconds = tk.DoubleVar(value=self.initial.config.get("seconds", 1.0) if self.initial else 1.0)
         ttk.Label(self.wait_frame, text="대기 시간 (초)").grid(row=0, column=0, sticky="w")
         ttk.Entry(self.wait_frame, textvariable=self.wait_seconds).grid(row=0, column=1, sticky="ew")
 
-        # image fields
-        self.image_frame = ttk.LabelFrame(container, text="이미지 조건")
-        self.image_path = tk.StringVar(value=self.initial.config.get("image_path", "") if self.initial else "")
-        ttk.Label(self.image_frame, text="이미지 경로").grid(row=0, column=0, sticky="w")
-        path_entry = ttk.Entry(self.image_frame, textvariable=self.image_path)
-        path_entry.grid(row=0, column=1, sticky="ew")
-        ttk.Button(self.image_frame, text="찾기", command=self._browse_image).grid(row=0, column=2, padx=4)
-        ttk.Button(self.image_frame, text="캡쳐", command=self._capture_image).grid(row=0, column=3, padx=4)
-        self.image_frame.columnconfigure(1, weight=1)
-        self.timeout_var = tk.DoubleVar(value=self.initial.config.get("timeout", 30.0) if self.initial else 30.0)
-        ttk.Label(self.image_frame, text="타임아웃 (초)").grid(row=1, column=0, sticky="w", pady=(6, 0))
-        ttk.Entry(self.image_frame, textvariable=self.timeout_var).grid(row=1, column=1, sticky="ew", pady=(6, 0))
-        self.interval_var = tk.DoubleVar(value=self.initial.config.get("interval", 0.5) if self.initial else 0.5)
-        ttk.Label(self.image_frame, text="재시도 간격 (초)").grid(row=2, column=0, sticky="w", pady=(6, 0))
-        ttk.Entry(self.image_frame, textvariable=self.interval_var).grid(row=2, column=1, sticky="ew", pady=(6, 0))
-        initial_confidence = self.initial.config.get("confidence") if self.initial else None
-        if initial_confidence in (None, ""):
-            default_confidence = f"{DEFAULT_CONFIDENCE}"
-        else:
-            default_confidence = str(initial_confidence)
-        self.confidence_var = tk.StringVar(value=default_confidence)
-        ttk.Label(self.image_frame, text="인식 정확도 (0~1, 선택)").grid(row=3, column=0, sticky="w", pady=(6, 0))
-        ttk.Entry(self.image_frame, textvariable=self.confidence_var).grid(row=3, column=1, sticky="ew", pady=(6, 0))
-
-        # packet fields
         self.packet_frame = ttk.LabelFrame(container, text="패킷 감지 조건")
         self.packet_ip = tk.StringVar(value=self.initial.config.get("ip", "") if self.initial else "")
         if self.initial:
             try:
-                initial_port = int(self.initial.config.get("port", 0))
+                initial_port = int(self.initial.config.get("port", 32800))
             except (TypeError, ValueError):
-                initial_port = 0
+                initial_port = 32800
             try:
                 initial_timeout = float(self.initial.config.get("timeout", 30.0))
             except (TypeError, ValueError):
                 initial_timeout = 30.0
         else:
-            initial_port = 0
+            initial_port = 32800
             initial_timeout = 30.0
         ttk.Label(self.packet_frame, text="IP 주소").grid(row=0, column=0, sticky="w")
         ttk.Entry(self.packet_frame, textvariable=self.packet_ip).grid(row=0, column=1, sticky="ew")
@@ -796,31 +588,22 @@ class ConditionDialog(BaseDialog):
         ttk.Label(self.packet_frame, text="타임아웃 (초, 0이면 무제한)").grid(row=2, column=0, sticky="w", pady=(6, 0))
         ttk.Entry(self.packet_frame, textvariable=self.packet_timeout).grid(row=2, column=1, sticky="ew", pady=(6, 0))
         self.packet_text = tk.StringVar(value=self.initial.config.get("detect_text", "") if self.initial else "")
-        ttk.Label(self.packet_frame, text="감지 문자열").grid(row=3, column=0, sticky="w", pady=(6, 0))
+        ttk.Label(self.packet_frame, text="감지 문자열 (선택)").grid(row=3, column=0, sticky="w", pady=(6, 0))
         ttk.Entry(self.packet_frame, textvariable=self.packet_text).grid(row=3, column=1, sticky="ew", pady=(6, 0))
         self.packet_frame.columnconfigure(1, weight=1)
 
         self.wait_frame.grid(row=2, column=0, columnspan=2, sticky="nsew", pady=(10, 0))
-        self.image_frame.grid(row=2, column=0, columnspan=2, sticky="nsew", pady=(10, 0))
         self.packet_frame.grid(row=2, column=0, columnspan=2, sticky="nsew", pady=(10, 0))
         self._update_fields()
 
     def _update_fields(self) -> None:
         mode = self.type_var.get()
         self.wait_frame.grid_remove()
-        self.image_frame.grid_remove()
         self.packet_frame.grid_remove()
         if mode == "wait":
             self.wait_frame.grid()
-        elif mode == "image":
-            self.image_frame.grid()
         else:
             self.packet_frame.grid()
-
-    def _browse_image(self) -> None:
-        path = filedialog.askopenfilename(parent=self, filetypes=(("이미지 파일", "*.png;*.jpg;*.jpeg;*.bmp"), ("모든 파일", "*.*")))
-        if path:
-            self.image_path.set(path)
 
     def apply(self) -> None:
         title = self.title_var.get().strip() or "조건"
@@ -830,43 +613,15 @@ class ConditionDialog(BaseDialog):
             if seconds < 0:
                 raise ValueError("대기 시간은 0 이상이어야 합니다.")
             config = {"type": "wait", "seconds": seconds}
-        elif condition_type == "image":
-            image_path = self.image_path.get().strip()
-            if not image_path:
-                raise ValueError("이미지 경로를 입력하세요.")
-            config = {
-                "type": "image",
-                "image_path": image_path,
-                "timeout": float(self.timeout_var.get()),
-                "interval": float(self.interval_var.get()),
-            }
-            config["confidence"] = _parse_confidence_value(self.confidence_var.get())
         else:
-            ip = self.packet_ip.get().strip()
-            if not ip:
-                raise ValueError("IP 주소를 입력하세요.")
-            detect_text = self.packet_text.get()
-            if not detect_text:
-                raise ValueError("감지할 문자열을 입력하세요.")
-            try:
-                port_value = int(self.packet_port.get())
-            except (TypeError, ValueError) as exc:
-                raise ValueError("포트는 숫자로 입력하세요.") from exc
-            if not (0 < port_value < 65536):
-                raise ValueError("포트는 1~65535 범위여야 합니다.")
             config = {
                 "type": "packet",
-                "ip": ip,
-                "port": port_value,
+                "ip": self.packet_ip.get().strip(),
+                "port": int(self.packet_port.get()),
                 "timeout": float(self.packet_timeout.get()),
-                "detect_text": detect_text,
+                "detect_text": self.packet_text.get().strip(),
             }
         self.result = DialogResult(title=title, config=config)
-
-    def _capture_image(self) -> None:
-        path = capture_image_via_drag(self)
-        if path:
-            self.image_path.set(str(path))
 
 
 class ActionDialog(BaseDialog):
@@ -882,208 +637,72 @@ class ActionDialog(BaseDialog):
 
         ttk.Label(container, text="행동 유형").grid(row=1, column=0, sticky="w", pady=(8, 0))
         self.type_var = tk.StringVar(value=(self.initial.config.get("type") if self.initial else "mouse_click"))
-        type_combo = ttk.Combobox(container, textvariable=self.type_var, state="readonly", values=("mouse_click", "keyboard", "image_click"))
+        type_combo = ttk.Combobox(container, textvariable=self.type_var, state="readonly", values=("mouse_click", "keyboard"))
         type_combo.grid(row=1, column=1, sticky="ew", pady=(8, 0))
         type_combo.bind("<<ComboboxSelected>>", lambda _e: self._update_fields())
 
-        # mouse click frame
         self.mouse_frame = ttk.LabelFrame(container, text="마우스 클릭")
-        self.mouse_mode = tk.StringVar(value=self.initial.config.get("mode", "coordinates") if self.initial else "coordinates")
-        ttk.Label(self.mouse_frame, text="클릭 방식").grid(row=0, column=0, sticky="w")
-        mode_combo = ttk.Combobox(self.mouse_frame, textvariable=self.mouse_mode, state="readonly", values=("coordinates", "image"))
-        mode_combo.grid(row=0, column=1, sticky="ew")
-        mode_combo.bind("<<ComboboxSelected>>", lambda _e: self._update_mouse_fields())
-        self.mouse_frame.columnconfigure(1, weight=1)
-        # 좌표 입력 컨테이너
-        self.mouse_coord_container = ttk.Frame(self.mouse_frame)
-        self.mouse_coord_container.grid(row=1, column=0, columnspan=4, sticky="nsew", pady=(6, 0))
-        self.mouse_coord_container.columnconfigure(1, weight=1)
         self.mouse_x = tk.IntVar(value=int(self.initial.config.get("x", 0)) if self.initial else 0)
         self.mouse_y = tk.IntVar(value=int(self.initial.config.get("y", 0)) if self.initial else 0)
-        ttk.Label(self.mouse_coord_container, text="X 좌표").grid(row=0, column=0, sticky="w")
-        ttk.Entry(self.mouse_coord_container, textvariable=self.mouse_x).grid(row=0, column=1, sticky="ew")
-        ttk.Label(self.mouse_coord_container, text="Y 좌표").grid(row=1, column=0, sticky="w", pady=(6, 0))
-        ttk.Entry(self.mouse_coord_container, textvariable=self.mouse_y).grid(row=1, column=1, sticky="ew", pady=(6, 0))
-
-        # 이미지 인식 컨테이너
-        self.mouse_image_container = ttk.Frame(self.mouse_frame)
-        self.mouse_image_container.grid(row=1, column=0, columnspan=4, sticky="nsew", pady=(6, 0))
-        self.mouse_image_container.columnconfigure(1, weight=1)
-        self.mouse_image_path = tk.StringVar(value=self.initial.config.get("image_path", "") if self.initial else "")
-        if self.initial:
-            try:
-                initial_offset_x = int(self.initial.config.get("offset_x", 0))
-            except (TypeError, ValueError):
-                initial_offset_x = 0
-            try:
-                initial_offset_y = int(self.initial.config.get("offset_y", 0))
-            except (TypeError, ValueError):
-                initial_offset_y = 0
-        else:
-            initial_offset_x = 0
-            initial_offset_y = 0
-        ttk.Label(self.mouse_image_container, text="이미지 경로").grid(row=0, column=0, sticky="w")
-        image_entry = ttk.Entry(self.mouse_image_container, textvariable=self.mouse_image_path)
-        image_entry.grid(row=0, column=1, sticky="ew")
-        ttk.Button(self.mouse_image_container, text="찾기", command=self._browse_mouse_image).grid(row=0, column=2, padx=4)
-        ttk.Button(self.mouse_image_container, text="캡쳐", command=self._capture_mouse_image).grid(row=0, column=3, padx=4)
-        self.mouse_offset_x = tk.IntVar(value=initial_offset_x)
-        self.mouse_offset_y = tk.IntVar(value=initial_offset_y)
-        ttk.Label(self.mouse_image_container, text="X 오프셋").grid(row=1, column=0, sticky="w", pady=(6, 0))
-        ttk.Entry(self.mouse_image_container, textvariable=self.mouse_offset_x).grid(row=1, column=1, sticky="ew", pady=(6, 0))
-        ttk.Label(self.mouse_image_container, text="Y 오프셋").grid(row=2, column=0, sticky="w", pady=(6, 0))
-        ttk.Entry(self.mouse_image_container, textvariable=self.mouse_offset_y).grid(row=2, column=1, sticky="ew", pady=(6, 0))
-        initial_mouse_conf = self.initial.config.get("confidence") if self.initial else None
-        if initial_mouse_conf in (None, ""):
-            mouse_default = f"{DEFAULT_CONFIDENCE}"
-        else:
-            mouse_default = str(initial_mouse_conf)
-        self.mouse_confidence = tk.StringVar(value=mouse_default)
-        ttk.Label(self.mouse_image_container, text="인식 정확도 (이미지)").grid(row=3, column=0, sticky="w", pady=(6, 0))
-        ttk.Entry(self.mouse_image_container, textvariable=self.mouse_confidence).grid(row=3, column=1, columnspan=3, sticky="ew", pady=(6, 0))
-
         self.mouse_clicks = tk.IntVar(value=int(self.initial.config.get("clicks", 1)) if self.initial else 1)
+        self.mouse_interval = tk.DoubleVar(value=float(self.initial.config.get("interval", 0.1)) if self.initial else 0.1)
+        self.mouse_button = tk.StringVar(value=self.initial.config.get("button", "left") if self.initial else "left")
+        ttk.Label(self.mouse_frame, text="X 좌표").grid(row=0, column=0, sticky="w")
+        ttk.Entry(self.mouse_frame, textvariable=self.mouse_x).grid(row=0, column=1, sticky="ew")
+        ttk.Label(self.mouse_frame, text="Y 좌표").grid(row=1, column=0, sticky="w", pady=(6, 0))
+        ttk.Entry(self.mouse_frame, textvariable=self.mouse_y).grid(row=1, column=1, sticky="ew", pady=(6, 0))
         ttk.Label(self.mouse_frame, text="클릭 횟수").grid(row=2, column=0, sticky="w", pady=(6, 0))
         ttk.Entry(self.mouse_frame, textvariable=self.mouse_clicks).grid(row=2, column=1, sticky="ew", pady=(6, 0))
-        self.mouse_interval = tk.DoubleVar(value=float(self.initial.config.get("interval", 0.1)) if self.initial else 0.1)
         ttk.Label(self.mouse_frame, text="클릭 간격 (초)").grid(row=3, column=0, sticky="w", pady=(6, 0))
         ttk.Entry(self.mouse_frame, textvariable=self.mouse_interval).grid(row=3, column=1, sticky="ew", pady=(6, 0))
-        self.mouse_button = tk.StringVar(value=self.initial.config.get("button", "left") if self.initial else "left")
         ttk.Label(self.mouse_frame, text="버튼").grid(row=4, column=0, sticky="w", pady=(6, 0))
-        ttk.Combobox(self.mouse_frame, textvariable=self.mouse_button, state="readonly", values=("left", "right", "middle")).grid(row=4, column=1, sticky="ew", pady=(6, 0))
+        ttk.Combobox(self.mouse_frame, textvariable=self.mouse_button, state="readonly", values=("left", "right", "middle"), width=10).grid(row=4, column=1, sticky="w", pady=(6, 0))
+        self.mouse_frame.columnconfigure(1, weight=1)
 
-        # keyboard frame
         self.keyboard_frame = ttk.LabelFrame(container, text="키보드 입력")
         self.keyboard_text = tk.StringVar(value=self.initial.config.get("text", "") if self.initial else "")
+        self.keyboard_interval = tk.DoubleVar(value=float(self.initial.config.get("interval", 0.05)) if self.initial else 0.05)
+        self.keyboard_enter = tk.BooleanVar(value=bool(self.initial.config.get("press_enter", False)) if self.initial else False)
         ttk.Label(self.keyboard_frame, text="입력 텍스트").grid(row=0, column=0, sticky="nw")
         ttk.Entry(self.keyboard_frame, textvariable=self.keyboard_text).grid(row=0, column=1, sticky="ew")
-        self.keyboard_interval = tk.DoubleVar(value=float(self.initial.config.get("interval", 0.05)) if self.initial else 0.05)
         ttk.Label(self.keyboard_frame, text="입력 간격 (초)").grid(row=1, column=0, sticky="w", pady=(6, 0))
         ttk.Entry(self.keyboard_frame, textvariable=self.keyboard_interval).grid(row=1, column=1, sticky="ew", pady=(6, 0))
-        self.keyboard_enter = tk.BooleanVar(value=bool(self.initial.config.get("press_enter", False)) if self.initial else False)
         ttk.Checkbutton(self.keyboard_frame, text="입력 후 Enter", variable=self.keyboard_enter).grid(row=2, column=0, columnspan=2, sticky="w", pady=(6, 0))
         self.keyboard_frame.columnconfigure(1, weight=1)
 
-        # image click frame (특화)
-        self.image_click_frame = ttk.LabelFrame(container, text="이미지 클릭")
-        self.image_click_path = tk.StringVar(value=self.initial.config.get("image_path", "") if self.initial else "")
-        ttk.Label(self.image_click_frame, text="이미지 경로").grid(row=0, column=0, sticky="w")
-        img_entry = ttk.Entry(self.image_click_frame, textvariable=self.image_click_path)
-        img_entry.grid(row=0, column=1, sticky="ew")
-        ttk.Button(self.image_click_frame, text="찾기", command=self._browse_image_click).grid(row=0, column=2, padx=4)
-        ttk.Button(self.image_click_frame, text="캡쳐", command=self._capture_image_click).grid(row=0, column=3, padx=4)
-        initial_click_conf = self.initial.config.get("confidence") if self.initial else None
-        if initial_click_conf in (None, ""):
-            click_default = f"{DEFAULT_CONFIDENCE}"
-        else:
-            click_default = str(initial_click_conf)
-        self.image_click_confidence = tk.StringVar(value=click_default)
-        ttk.Label(self.image_click_frame, text="인식 정확도").grid(row=1, column=0, sticky="w", pady=(6, 0))
-        ttk.Entry(self.image_click_frame, textvariable=self.image_click_confidence).grid(row=1, column=1, sticky="ew", pady=(6, 0))
-        self.image_click_clicks = tk.IntVar(value=int(self.initial.config.get("clicks", 1)) if self.initial else 1)
-        ttk.Label(self.image_click_frame, text="클릭 횟수").grid(row=2, column=0, sticky="w", pady=(6, 0))
-        ttk.Entry(self.image_click_frame, textvariable=self.image_click_clicks).grid(row=2, column=1, sticky="ew", pady=(6, 0))
-        self.image_click_interval = tk.DoubleVar(value=float(self.initial.config.get("interval", 0.1)) if self.initial else 0.1)
-        ttk.Label(self.image_click_frame, text="클릭 간격 (초)").grid(row=3, column=0, sticky="w", pady=(6, 0))
-        ttk.Entry(self.image_click_frame, textvariable=self.image_click_interval).grid(row=3, column=1, sticky="ew", pady=(6, 0))
-        self.image_click_button = tk.StringVar(value=self.initial.config.get("button", "left") if self.initial else "left")
-        ttk.Label(self.image_click_frame, text="버튼").grid(row=4, column=0, sticky="w", pady=(6, 0))
-        ttk.Combobox(self.image_click_frame, textvariable=self.image_click_button, state="readonly", values=("left", "right", "middle")).grid(row=4, column=1, sticky="ew", pady=(6, 0))
-        self.image_click_frame.columnconfigure(1, weight=1)
-
         self.mouse_frame.grid(row=2, column=0, columnspan=2, sticky="nsew", pady=(10, 0))
         self.keyboard_frame.grid(row=2, column=0, columnspan=2, sticky="nsew", pady=(10, 0))
-        self.image_click_frame.grid(row=2, column=0, columnspan=2, sticky="nsew", pady=(10, 0))
         self._update_fields()
-        self._update_mouse_fields()
 
     def _update_fields(self) -> None:
         mode = self.type_var.get()
         self.mouse_frame.grid_remove()
         self.keyboard_frame.grid_remove()
-        self.image_click_frame.grid_remove()
         if mode == "mouse_click":
             self.mouse_frame.grid()
-        elif mode == "keyboard":
+        else:
             self.keyboard_frame.grid()
-        else:
-            self.image_click_frame.grid()
-
-    def _update_mouse_fields(self) -> None:
-        mode = self.mouse_mode.get()
-        if mode == "coordinates":
-            self.mouse_coord_container.grid()
-            self.mouse_image_container.grid_remove()
-        else:
-            self.mouse_image_container.grid()
-            self.mouse_coord_container.grid_remove()
-
-    def _browse_mouse_image(self) -> None:
-        path = filedialog.askopenfilename(parent=self, filetypes=(("이미지 파일", "*.png;*.jpg;*.jpeg;*.bmp"), ("모든 파일", "*.*")))
-        if path:
-            self.mouse_image_path.set(path)
-
-    def _browse_image_click(self) -> None:
-        path = filedialog.askopenfilename(parent=self, filetypes=(("이미지 파일", "*.png;*.jpg;*.jpeg;*.bmp"), ("모든 파일", "*.*")))
-        if path:
-            self.image_click_path.set(path)
 
     def apply(self) -> None:
         title = self.title_var.get().strip() or "행동"
         action_type = self.type_var.get()
         if action_type == "mouse_click":
-            mode = self.mouse_mode.get()
             config = {
                 "type": "mouse_click",
-                "mode": mode,
+                "x": int(self.mouse_x.get()),
+                "y": int(self.mouse_y.get()),
                 "clicks": int(self.mouse_clicks.get()),
                 "interval": float(self.mouse_interval.get()),
                 "button": self.mouse_button.get(),
             }
-            if mode == "coordinates":
-                config.update({"x": int(self.mouse_x.get()), "y": int(self.mouse_y.get())})
-            else:
-                image_path = self.mouse_image_path.get().strip()
-                if not image_path:
-                    raise ValueError("이미지 경로를 입력하세요.")
-                config.update(
-                    {
-                        "image_path": image_path,
-                        "offset_x": int(self.mouse_offset_x.get()),
-                        "offset_y": int(self.mouse_offset_y.get()),
-                    }
-                )
-                config["confidence"] = _parse_confidence_value(self.mouse_confidence.get())
-        elif action_type == "keyboard":
+        else:
             config = {
                 "type": "keyboard",
                 "text": self.keyboard_text.get(),
                 "interval": float(self.keyboard_interval.get()),
                 "press_enter": bool(self.keyboard_enter.get()),
             }
-        else:
-            image_path = self.image_click_path.get().strip()
-            if not image_path:
-                raise ValueError("이미지 경로를 입력하세요.")
-            config = {
-                "type": "image_click",
-                "image_path": image_path,
-                "clicks": int(self.image_click_clicks.get()),
-                "interval": float(self.image_click_interval.get()),
-                "button": self.image_click_button.get(),
-            }
-            config["confidence"] = _parse_confidence_value(self.image_click_confidence.get())
         self.result = DialogResult(title=title, config=config)
-
-    def _capture_mouse_image(self) -> None:
-        path = capture_image_via_drag(self)
-        if path:
-            self.mouse_image_path.set(str(path))
-
-    def _capture_image_click(self) -> None:
-        path = capture_image_via_drag(self)
-        if path:
-            self.image_click_path.set(str(path))
 
 
 class LoopDialog(BaseDialog):
