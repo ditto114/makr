@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-"""Scapy를 활용한 패킷 캡쳐 및 알림 관리."""
+"""Scapy를 활용한 패킷 캡쳐 관리."""
 
 import threading
-from typing import Callable, Iterable, List, Set
+from typing import Callable
 
 
 class PacketCaptureError(RuntimeError):
@@ -11,20 +11,17 @@ class PacketCaptureError(RuntimeError):
 
 
 class PacketCaptureManager:
-    """지정된 포트의 패킷을 캡쳐하고 알림 문자열을 감지한다."""
+    """지정된 포트의 패킷을 캡쳐한다."""
 
     def __init__(
         self,
         on_packet: Callable[[str], None],
-        on_alert: Callable[[str, str], None],
         on_error: Callable[[str], None],
         port: int = 32800,
     ) -> None:
         self._on_packet = on_packet
-        self._on_alert = on_alert
         self._on_error = on_error
         self._sniffer = None
-        self._alerts: Set[str] = set()
         self._lock = threading.Lock()
         self._port = port
 
@@ -35,10 +32,6 @@ class PacketCaptureManager:
     @property
     def port(self) -> int:
         return self._port
-
-    def set_alerts(self, alerts: Iterable[str]) -> None:
-        with self._lock:
-            self._alerts = {text for text in alerts if text}
 
     def set_port(self, port: int) -> None:
         if port <= 0 or port > 65535:
@@ -65,7 +58,6 @@ class PacketCaptureManager:
             except UnicodeDecodeError:
                 decoded = raw_payload.decode("utf-8", errors="ignore")
             self._on_packet(decoded)
-            self._check_alerts(decoded)
 
         try:
             self._sniffer = AsyncSniffer(
@@ -87,9 +79,3 @@ class PacketCaptureManager:
             self._on_error("패킷 캡쳐 중지를 완료하지 못했습니다.")
         finally:
             self._sniffer = None
-
-    def _check_alerts(self, payload: str) -> None:
-        with self._lock:
-            alerts: List[str] = [text for text in self._alerts if text in payload]
-        for text in alerts:
-            self._on_alert(text, payload)

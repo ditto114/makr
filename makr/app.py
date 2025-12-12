@@ -123,27 +123,18 @@ def build_gui() -> None:
     status_var = tk.StringVar()
     click_delay_var = tk.StringVar(value=str(saved_state.get("click_delay_ms", "100")))
     step_transition_delay_var = tk.StringVar(value=str(saved_state.get("step_transition_delay_ms", "200")))
-    channel_detection_delay_var = tk.StringVar(
-        value=str(saved_state.get("channel_detection_delay_ms", "0"))
-    )
     packet_limit_var = tk.StringVar(value=str(saved_state.get("packet_limit", "200")))
     packet_status_var = tk.StringVar(value="패킷 캡쳐 중지됨")
-    alert_keywords: list[str] = list(saved_state.get("alert_keywords", []))
     channel_names: set[str] = set(saved_state.get("channel_names", []))
 
     entries: dict[str, tuple[tk.Entry, tk.Entry]] = {}
     packet_queue: deque[tuple[int, str]] = deque()
     packet_queue_lock = threading.Lock()
     packet_flush_job: str | None = None
-    channel_cycle_running = False
-    channel_waiting_for_packet = False
-    channel_alert_cycle_running = False
-    channel_alert_waiting_for_packet = False
     capture_listener: mouse.Listener | None = None
     hotkey_listener: keyboard.Listener | None = None
     packet_manager = PacketCaptureManager(
         on_packet=lambda text: enqueue_packet_text(text),
-        on_alert=lambda keyword, payload: root.after(0, log_packet_alert, keyword, payload),
         on_error=lambda msg: root.after(0, messagebox.showerror, "패킷 캡쳐 오류", msg),
     )
 
@@ -164,9 +155,6 @@ def build_gui() -> None:
 
     def get_step_transition_delay_ms() -> int:
         return _parse_delay_ms(step_transition_delay_var, "1→2단계 전환 딜레이", 200)
-
-    def get_channel_detection_delay_ms() -> int:
-        return _parse_delay_ms(channel_detection_delay_var, "Channel 감지 후 실행 딜레이", 0)
 
     def add_coordinate_row(label_text: str, key: str) -> None:
         frame = tk.Frame(root)
@@ -254,12 +242,6 @@ def build_gui() -> None:
         step_transition_delay_var,
         "반복 실행 시 1단계 후 2단계로 넘어가기 전 대기 시간입니다.",
     )
-    add_delay_input(
-        "Channel 감지 후 실행 (ms)",
-        channel_detection_delay_var,
-        "'Channel' 문자열 감지 후 F1 단계 실행까지 대기 시간입니다.",
-    )
-
     status_label = tk.Label(root, textvariable=status_var, fg="#006400")
     status_label.pack(pady=(0, 10))
 
@@ -292,19 +274,6 @@ def build_gui() -> None:
     channel_info_btn = ttk.Button(retention_frame, text="채널정보")
     channel_info_btn.pack(side="left")
 
-    alert_frame = ttk.LabelFrame(packet_frame, text="패킷 알림")
-    alert_frame.grid(row=3, column=0, columnspan=3, sticky="nsew", padx=8, pady=(6, 0))
-    alert_frame.columnconfigure(0, weight=1)
-    alert_frame.rowconfigure(1, weight=1)
-
-    alert_entry = ttk.Entry(alert_frame)
-    alert_entry.grid(row=0, column=0, sticky="ew", padx=(0, 6), pady=6)
-    alert_listbox = tk.Listbox(alert_frame, height=4)
-    alert_listbox.grid(row=1, column=0, sticky="nsew")
-    alert_scroll = ttk.Scrollbar(alert_frame, orient="vertical", command=alert_listbox.yview)
-    alert_listbox.configure(yscrollcommand=alert_scroll.set)
-    alert_scroll.grid(row=1, column=1, sticky="ns")
-
     packet_tree = ttk.Treeview(packet_frame, columns=("payload",), show="tree", height=10)
     packet_tree.grid(row=4, column=0, columnspan=3, sticky="nsew", padx=8, pady=8)
     packet_tree_scroll = ttk.Scrollbar(packet_frame, orient="vertical", command=packet_tree.yview)
@@ -315,6 +284,7 @@ def build_gui() -> None:
     packet_items: deque[str] = deque()
     channel_info_window: tk.Toplevel | None = None
     channel_treeview: ttk.Treeview | None = None
+    channel_name_pattern = re.compile(r"[A-Z]-[가-힣]\d{2,3}")
 
     def format_timestamp(ts_sec: int) -> str:
         return time.strftime('%H:%M:%S', time.localtime(ts_sec))
@@ -383,52 +353,12 @@ def build_gui() -> None:
             return
         packet_flush_job = root.after(200, flush_packet_queue)
 
-    def matches_registered_keyword(payload: str) -> bool:
-        return any(keyword in payload for keyword in alert_keywords)
-
     def enqueue_packet_text(text: str) -> None:
         timestamp_sec = int(time.time())
-        is_registered_match = matches_registered_keyword(text)
-        if is_registered_match:
-            with packet_queue_lock:
-                packet_queue.append((timestamp_sec, text))
-            root.after(0, schedule_packet_flush)
-        root.after(0, handle_channel_detection, text)
-        root.after(0, handle_channel_alert_detection, text)
-        root.after(0, extract_and_store_channel_names, text, is_registered_match)
-
-    def log_packet_alert(keyword: str, payload: str) -> None:
-        append_packet_group(int(time.time()), [payload], label_prefix=f"[알림] '{keyword}'")
-        print(f"[패킷 알림] '{keyword}' 문자열이 포함된 패킷이 감지되었습니다.")
-
-    def refresh_alerts() -> None:
-        alert_listbox.delete(0, tk.END)
-        for text in alert_keywords:
-            alert_listbox.insert(tk.END, text)
-
-    def add_alert_keyword() -> None:
-        keyword = alert_entry.get().strip()
-        if not keyword:
-            messagebox.showinfo("알림 문자열", "등록할 문자열을 입력하세요.")
-            return
-        if keyword not in alert_keywords:
-            alert_keywords.append(keyword)
-            if packet_manager.running:
-                packet_manager.set_alerts(alert_keywords)
-            refresh_alerts()
-            alert_entry.delete(0, tk.END)
-        else:
-            messagebox.showinfo("알림 문자열", "이미 등록된 문자열입니다.")
-
-    def remove_selected_alert() -> None:
-        selection = alert_listbox.curselection()
-        if not selection:
-            return
-        keyword = alert_listbox.get(selection[0])
-        alert_keywords.remove(keyword)
-        if packet_manager.running:
-            packet_manager.set_alerts(alert_keywords)
-        refresh_alerts()
+        with packet_queue_lock:
+            packet_queue.append((timestamp_sec, text))
+        root.after(0, schedule_packet_flush)
+        root.after(0, detect_channel_names, text)
 
     def collect_app_state() -> dict:
         coordinates: dict[str, dict[str, str]] = {}
@@ -438,9 +368,7 @@ def build_gui() -> None:
             "coordinates": coordinates,
             "click_delay_ms": click_delay_var.get(),
             "step_transition_delay_ms": step_transition_delay_var.get(),
-            "channel_detection_delay_ms": channel_detection_delay_var.get(),
             "packet_port": packet_port_var.get(),
-            "alert_keywords": alert_keywords,
             "packet_limit": packet_limit_var.get(),
             "channel_names": sorted(channel_names),
         }
@@ -468,7 +396,6 @@ def build_gui() -> None:
         except ValueError as exc:
             messagebox.showerror("포트 오류", str(exc))
             return
-        packet_manager.set_alerts(alert_keywords)
         packet_manager.start()
         packet_status_var.set(f"포트 {port_value} 캡쳐 중...")
         start_capture_btn.configure(state="disabled")
@@ -498,63 +425,13 @@ def build_gui() -> None:
 
         threading.Thread(target=_stop_capture_in_thread, daemon=True).start()
 
-    ttk.Button(alert_frame, text="문자열 등록", command=add_alert_keyword).grid(
-        row=0, column=1, sticky="ew", pady=6
-    )
-    ttk.Button(alert_frame, text="선택 삭제", command=remove_selected_alert).grid(
-        row=2, column=0, columnspan=2, sticky="ew", pady=(6, 6)
-    )
-
-    refresh_alerts()
-
     start_capture_btn.configure(command=start_packet_capture)
     stop_capture_btn.configure(command=stop_packet_capture)
     channel_info_btn.configure(command=lambda: show_channel_info_window())
 
-    def run_channel_cycle_once() -> None:
-        nonlocal channel_waiting_for_packet
-        if not channel_cycle_running:
-            return
-        controller.reset_and_run_first()
-        channel_waiting_for_packet = True
-        status_var.set("'Channel' 문자열 포함 패킷을 기다리는 중입니다.")
-
-    def handle_channel_detection(payload: str) -> None:
-        nonlocal channel_waiting_for_packet
-        if not (channel_cycle_running and channel_waiting_for_packet):
-            return
-        if "Channel" not in payload:
-            return
-        channel_waiting_for_packet = False
-        status_var.set("'Channel' 패킷 감지! 2단계를 실행합니다.")
-        channel_delay_ms = get_channel_detection_delay_ms()
-
-        def _run_step_after_delay() -> None:
-            if not channel_cycle_running:
-                return
-            controller.run_step()
-            if channel_cycle_running:
-                root.after(0, run_channel_cycle_once)
-
-        root.after(channel_delay_ms, _run_step_after_delay)
-
-    channel_pattern = re.compile(r"[A-Z]-[가-힣]\d{2,3}")
-
-    def extract_channel_candidates(payload: str) -> list[str]:
-        candidates: list[str] = []
-        search_start = 0
-        while True:
-            channel_pos = payload.find("Channel", search_start)
-            if channel_pos == -1:
-                break
-            substring = payload[channel_pos + len("Channel") :]
-            match = channel_pattern.search(substring)
-            if match:
-                candidates.append(match.group(0))
-                search_start = channel_pos + len("Channel") + match.end()
-            else:
-                search_start = channel_pos + len("Channel")
-        return candidates
+    def extract_channel_names(payload: str) -> list[str]:
+        normalized = payload.replace("\n", "")
+        return [match.group(0) for match in channel_name_pattern.finditer(normalized)]
 
     def refresh_channel_treeview() -> None:
         nonlocal channel_treeview
@@ -566,21 +443,16 @@ def build_gui() -> None:
             channel_treeview.insert("", "end", text=f"{idx}. {name}")
 
     def log_new_channel(name: str) -> None:
-        append_packet_group(
-            int(time.time() * 1000),
-            [f"채널명: {name}"],
-            label_prefix=f"[채널] 새 채널 감지: {name}",
-        )
-        status_var.set("새 채널 감지")
+        append_packet_group(int(time.time()), [f"[새 채널] ({name})"])
+        status_var.set(f"새 채널 감지: {name}")
 
-    def extract_and_store_channel_names(payload: str, should_log_packet: bool = True) -> None:
+    def detect_channel_names(payload: str) -> None:
         new_found = False
-        for candidate in extract_channel_candidates(payload):
+        for candidate in extract_channel_names(payload):
             if candidate not in channel_names:
                 channel_names.add(candidate)
                 new_found = True
-                if should_log_packet:
-                    log_new_channel(candidate)
+                log_new_channel(candidate)
         if new_found:
             refresh_channel_treeview()
 
@@ -642,92 +514,21 @@ def build_gui() -> None:
 
         def on_close_channel_window() -> None:
             nonlocal channel_info_window, channel_treeview
+            window = channel_info_window
             channel_info_window = None
             channel_treeview = None
             tree_scroll.destroy()
             tree.destroy()
+            if window is not None:
+                window.destroy()
 
         channel_info_window.protocol("WM_DELETE_WINDOW", on_close_channel_window)
-
-    def stop_channel_cycle() -> None:
-        nonlocal channel_cycle_running, channel_waiting_for_packet
-        channel_cycle_running = False
-        channel_waiting_for_packet = False
-        status_var.set("Channel 감지 반복을 종료했습니다.")
-
-    def start_channel_cycle() -> None:
-        nonlocal channel_cycle_running
-        if channel_cycle_running:
-            status_var.set("Channel 감지 반복이 이미 실행 중입니다.")
-            return
-        channel_cycle_running = True
-        status_var.set("F2 실행 후 'Channel' 감지까지 대기합니다.")
-        run_channel_cycle_once()
-
-    def toggle_channel_cycle() -> None:
-        if channel_cycle_running:
-            stop_channel_cycle()
-        else:
-            start_channel_cycle()
-
-    def stop_channel_alert_cycle() -> None:
-        nonlocal channel_alert_cycle_running, channel_alert_waiting_for_packet
-        channel_alert_cycle_running = False
-        channel_alert_waiting_for_packet = False
-        status_var.set("F4 매크로를 종료했습니다.")
-
-    def run_channel_alert_cycle_once() -> None:
-        nonlocal channel_alert_waiting_for_packet
-        if not channel_alert_cycle_running:
-            return
-        controller.reset_and_run_first()
-        channel_alert_waiting_for_packet = True
-        status_var.set("'Channel' 및 '새 채널 대기 알림' 감지를 기다리는 중입니다.")
-
-    def start_channel_alert_cycle() -> None:
-        nonlocal channel_alert_cycle_running
-        if channel_alert_cycle_running:
-            stop_channel_alert_cycle()
-        channel_alert_cycle_running = True
-        status_var.set("F2 실행 후 감지를 시작합니다.")
-        run_channel_alert_cycle_once()
-
-    def handle_channel_alert_detection(payload: str) -> None:
-        nonlocal channel_alert_waiting_for_packet
-        if not (channel_alert_cycle_running and channel_alert_waiting_for_packet):
-            return
-        if "Channel" not in payload:
-            return
-
-        has_wait_alert = "새 채널 대기 알림" in payload
-        channel_alert_waiting_for_packet = False
-
-        if not has_wait_alert:
-            status_var.set("'Channel' 감지됨. F2부터 다시 반복합니다.")
-            root.after(0, run_channel_alert_cycle_once)
-            return
-
-        status_var.set("'Channel'과 '새 채널 대기 알림' 감지됨. F1 실행을 준비합니다.")
-        channel_delay_ms = get_channel_detection_delay_ms()
-
-        def _execute_after_delay() -> None:
-            if not channel_alert_cycle_running:
-                return
-            controller.run_step()
-            stop_channel_alert_cycle()
-            status_var.set("F4 매크로를 완료했습니다.")
-
-        root.after(channel_delay_ms, _execute_after_delay)
 
     def on_hotkey_press(key: keyboard.Key) -> None:
         if key == keyboard.Key.f1:
             root.after(0, controller.run_step)
         elif key == keyboard.Key.f2:
             root.after(0, controller.reset_and_run_first)
-        elif key == keyboard.Key.f3:
-            root.after(0, toggle_channel_cycle)
-        elif key == keyboard.Key.f4:
-            root.after(0, start_channel_alert_cycle)
 
     def start_hotkey_listener() -> None:
         nonlocal hotkey_listener
@@ -741,8 +542,6 @@ def build_gui() -> None:
         if hotkey_listener is not None:
             hotkey_listener.stop()
         stop_packet_capture()
-        stop_channel_cycle()
-        stop_channel_alert_cycle()
         root.destroy()
 
     start_hotkey_listener()

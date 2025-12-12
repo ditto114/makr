@@ -37,7 +37,6 @@ class MacroEditorApp(tk.Tk):
         self._drag_insert_after = False
         self._drag_moved = False
         self.packet_status_var = tk.StringVar(value="패킷 캡쳐 중지됨")
-        self._packet_alerts: List[str] = []
         self._build_ui()
         self._refresh_tree()
         self._init_packet_capture_manager()
@@ -120,7 +119,7 @@ class MacroEditorApp(tk.Tk):
         packet_group.grid(row=2, column=0, sticky="nsew", pady=(10, 0))
         packet_group.columnconfigure(0, weight=1)
         packet_group.columnconfigure(1, weight=1)
-        packet_group.rowconfigure(3, weight=1)
+        packet_group.rowconfigure(2, weight=1)
 
         ttk.Label(packet_group, textvariable=self.packet_status_var, foreground="#0a5").grid(
             row=0, column=0, columnspan=2, sticky="w", padx=8, pady=(8, 4)
@@ -139,29 +138,11 @@ class MacroEditorApp(tk.Tk):
         )
         self.packet_stop_button.grid(row=0, column=1, sticky="ew", padx=2)
 
-        alert_frame = ttk.LabelFrame(packet_group, text="패킷 알림")
-        alert_frame.grid(row=2, column=0, columnspan=2, sticky="nsew", padx=8, pady=(6, 0))
-        alert_frame.columnconfigure(0, weight=1)
-        alert_frame.rowconfigure(1, weight=1)
-        self.alert_entry = ttk.Entry(alert_frame)
-        self.alert_entry.grid(row=0, column=0, sticky="ew", padx=(0, 6), pady=6)
-        ttk.Button(alert_frame, text="문자열 등록", command=self._add_alert_keyword).grid(
-            row=0, column=1, sticky="ew", pady=6
-        )
-        self.alert_listbox = tk.Listbox(alert_frame, height=4)
-        self.alert_listbox.grid(row=1, column=0, sticky="nsew")
-        alert_scroll = ttk.Scrollbar(alert_frame, orient="vertical", command=self.alert_listbox.yview)
-        self.alert_listbox.configure(yscrollcommand=alert_scroll.set)
-        alert_scroll.grid(row=1, column=1, sticky="ns")
-        ttk.Button(alert_frame, text="선택 삭제", command=self._remove_selected_alert).grid(
-            row=2, column=0, columnspan=2, sticky="ew", pady=(6, 6)
-        )
-
         self.packet_text_display = tk.Text(packet_group, wrap="word", height=6, state="disabled")
-        self.packet_text_display.grid(row=3, column=0, sticky="nsew", padx=8, pady=8)
+        self.packet_text_display.grid(row=2, column=0, sticky="nsew", padx=8, pady=8)
         packet_scroll = ttk.Scrollbar(packet_group, orient="vertical", command=self.packet_text_display.yview)
         self.packet_text_display.configure(yscrollcommand=packet_scroll.set)
-        packet_scroll.grid(row=3, column=1, sticky="ns", pady=8)
+        packet_scroll.grid(row=2, column=1, sticky="ns", pady=8)
 
         control_frame = ttk.Frame(right_frame)
         control_frame.grid(row=3, column=0, sticky="ew", pady=(10, 0))
@@ -178,7 +159,6 @@ class MacroEditorApp(tk.Tk):
     def _init_packet_capture_manager(self) -> None:
         self.packet_capture_manager = PacketCaptureManager(
             on_packet=self._threadsafe_on_packet,
-            on_alert=self._threadsafe_on_packet_alert,
             on_error=self._threadsafe_on_packet_error,
         )
 
@@ -491,9 +471,6 @@ class MacroEditorApp(tk.Tk):
     def _threadsafe_on_packet(self, payload: str) -> None:
         self.after(0, lambda: self._display_captured_packet(payload))
 
-    def _threadsafe_on_packet_alert(self, keyword: str, payload: str) -> None:
-        self.after(0, lambda: self._handle_packet_alert(keyword, payload))
-
     def _threadsafe_on_packet_error(self, message: str) -> None:
         self.after(0, lambda: self._handle_packet_error(message))
 
@@ -505,10 +482,6 @@ class MacroEditorApp(tk.Tk):
         self.packet_text_display.see("end")
         self.packet_text_display.configure(state="disabled")
 
-    def _handle_packet_alert(self, keyword: str, payload: str) -> None:
-        self._append_log(f"패킷 알림: '{keyword}' 문자열이 감지되었습니다.")
-        self._display_captured_packet(payload)
-
     def _handle_packet_error(self, message: str) -> None:
         self.packet_status_var.set("패킷 캡쳐 오류")
         self._append_log(f"[패킷 오류] {message}")
@@ -516,7 +489,6 @@ class MacroEditorApp(tk.Tk):
         self.packet_stop_button.configure(state="disabled")
 
     def _start_packet_capture(self) -> None:
-        self.packet_capture_manager.set_alerts(self._packet_alerts)
         self.packet_capture_manager.start()
         if self.packet_capture_manager.running:
             self.packet_status_var.set("패킷 캡쳐 실행 중 (포트 32800)")
@@ -530,30 +502,6 @@ class MacroEditorApp(tk.Tk):
         self.packet_status_var.set("패킷 캡쳐 중지됨")
         self.packet_start_button.configure(state="normal")
         self.packet_stop_button.configure(state="disabled")
-
-    def _add_alert_keyword(self) -> None:
-        text = self.alert_entry.get().strip()
-        if not text:
-            messagebox.showinfo("알림 등록", "알림에 사용할 문자열을 입력하세요.")
-            return
-        if text in self._packet_alerts:
-            messagebox.showinfo("알림 등록", "이미 등록된 문자열입니다.")
-            return
-        self._packet_alerts.append(text)
-        self.alert_listbox.insert("end", text)
-        self.packet_capture_manager.set_alerts(self._packet_alerts)
-        self.alert_entry.delete(0, "end")
-
-    def _remove_selected_alert(self) -> None:
-        selection = list(self.alert_listbox.curselection())
-        if not selection:
-            return
-        for index in reversed(selection):
-            text = self.alert_listbox.get(index)
-            self.alert_listbox.delete(index)
-            if text in self._packet_alerts:
-                self._packet_alerts.remove(text)
-        self.packet_capture_manager.set_alerts(self._packet_alerts)
 
     def _start_execution(self) -> None:
         if self._execution_thread and self._execution_thread.is_alive():
