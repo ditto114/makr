@@ -243,7 +243,22 @@ def build_gui() -> None:
         "반복 실행 시 1단계 후 2단계로 넘어가기 전 대기 시간입니다.",
     )
     status_label = tk.Label(root, textvariable=status_var, fg="#006400")
-    status_label.pack(pady=(0, 10))
+    status_label.pack(pady=(0, 4))
+
+    alert_frame = ttk.Frame(root)
+    alert_frame.pack(fill="x", padx=10, pady=(0, 10))
+    alert_frame.columnconfigure(0, weight=1)
+    alert_frame.columnconfigure(1, weight=1)
+
+    channel_alert_var = tk.StringVar()
+    channel_packet_alert_var = tk.StringVar()
+
+    ttk.Label(alert_frame, textvariable=channel_alert_var, anchor="w", foreground="#0a5").grid(
+        row=0, column=0, sticky="w"
+    )
+    ttk.Label(alert_frame, textvariable=channel_packet_alert_var, anchor="e", foreground="#05a").grid(
+        row=0, column=1, sticky="e"
+    )
 
     packet_frame = ttk.LabelFrame(root, text="패킷 캡쳐")
     packet_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
@@ -448,7 +463,7 @@ def build_gui() -> None:
     def log_new_channel(name: str) -> None:
         timestamp = time.time()
         append_packet_group(timestamp, [f"[새 채널] ({name})"])
-        status_var.set(f"{format_timestamp(timestamp)} 새 채널 감지: {name}")
+        channel_alert_var.set(f"{format_timestamp(timestamp)} 새 채널 감지: {name}")
 
     def detect_channel_names(payload: str) -> None:
         new_found = False
@@ -463,7 +478,7 @@ def build_gui() -> None:
     def log_channel_packet(payload: str) -> None:
         timestamp = time.time()
         append_packet_group(timestamp, [f"[Channel 감지] {payload}"])
-        status_var.set(f"{format_timestamp(timestamp)} Channel 패킷 감지")
+        channel_packet_alert_var.set(f"{format_timestamp(timestamp)} Channel 패킷 감지")
 
     def detect_channel_packet(payload: str) -> None:
         if "Channel" in payload:
