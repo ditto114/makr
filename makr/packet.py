@@ -11,13 +11,14 @@ class PacketCaptureError(RuntimeError):
 
 
 class PacketCaptureManager:
-    """포트 32800 패킷을 캡쳐하고 알림 문자열을 감지한다."""
+    """지정된 포트의 패킷을 캡쳐하고 알림 문자열을 감지한다."""
 
     def __init__(
         self,
         on_packet: Callable[[str], None],
         on_alert: Callable[[str, str], None],
         on_error: Callable[[str], None],
+        port: int = 32800,
     ) -> None:
         self._on_packet = on_packet
         self._on_alert = on_alert
@@ -25,14 +26,24 @@ class PacketCaptureManager:
         self._sniffer = None
         self._alerts: Set[str] = set()
         self._lock = threading.Lock()
+        self._port = port
 
     @property
     def running(self) -> bool:
         return bool(self._sniffer and getattr(self._sniffer, "running", False))
 
+    @property
+    def port(self) -> int:
+        return self._port
+
     def set_alerts(self, alerts: Iterable[str]) -> None:
         with self._lock:
             self._alerts = {text for text in alerts if text}
+
+    def set_port(self, port: int) -> None:
+        if port <= 0 or port > 65535:
+            raise ValueError("포트 번호는 1~65535 사이의 정수여야 합니다.")
+        self._port = port
 
     def start(self) -> None:
         if self.running:
@@ -58,7 +69,7 @@ class PacketCaptureManager:
 
         try:
             self._sniffer = AsyncSniffer(
-                filter="port 32800",
+                filter=f"port {self._port}",
                 prn=handle_packet,
                 store=False,
             )

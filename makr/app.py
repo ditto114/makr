@@ -6,7 +6,9 @@ macOS에서 최상단에 고정된 창을 제공하며, 실행/다시 버튼으�
 
 import time
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import messagebox, ttk
+
+from packet import PacketCaptureManager
 
 import pyautogui
 from pynput import keyboard, mouse
@@ -81,12 +83,19 @@ def build_gui() -> None:
 
     status_var = tk.StringVar()
     repeat_delay_var = tk.StringVar(value="750")
+    packet_status_var = tk.StringVar(value="패킷 캡쳐 중지됨")
     repeat_running = False
     repeat_job_id: str | None = None
+    alert_keywords: list[str] = []
 
     entries: dict[str, tuple[tk.Entry, tk.Entry]] = {}
     capture_listener: mouse.Listener | None = None
     hotkey_listener: keyboard.Listener | None = None
+    packet_manager = PacketCaptureManager(
+        on_packet=lambda text: root.after(0, append_packet_text, text),
+        on_alert=lambda keyword, payload: root.after(0, log_packet_alert, keyword, payload),
+        on_error=lambda msg: root.after(0, messagebox.showerror, "패킷 캡쳐 오류", msg),
+    )
 
     def add_coordinate_row(label_text: str, key: str) -> None:
         frame = tk.Frame(root)
@@ -163,6 +172,125 @@ def build_gui() -> None:
     status_label = tk.Label(root, textvariable=status_var, fg="#006400")
     status_label.pack(pady=(0, 10))
 
+    packet_frame = ttk.LabelFrame(root, text="패킷 캡쳐")
+    packet_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+    packet_frame.columnconfigure(0, weight=1)
+    packet_frame.rowconfigure(3, weight=1)
+
+    packet_status_label = ttk.Label(packet_frame, textvariable=packet_status_var, foreground="#0a5")
+    packet_status_label.grid(row=0, column=0, columnspan=3, sticky="w", padx=8, pady=(8, 4))
+
+    ttk.Label(packet_frame, text="포트").grid(row=1, column=0, sticky="w", padx=8)
+    packet_port_var = tk.StringVar(value="32800")
+    packet_port_entry = ttk.Entry(packet_frame, textvariable=packet_port_var, width=10)
+    packet_port_entry.grid(row=1, column=1, sticky="w")
+
+    packet_control_frame = ttk.Frame(packet_frame)
+    packet_control_frame.grid(row=1, column=2, sticky="e", padx=8)
+    start_capture_btn = ttk.Button(packet_control_frame, text="캡쳐 시작")
+    stop_capture_btn = ttk.Button(packet_control_frame, text="캡쳐 중지", state="disabled")
+    start_capture_btn.grid(row=0, column=0, padx=2)
+    stop_capture_btn.grid(row=0, column=1, padx=2)
+
+    alert_frame = ttk.LabelFrame(packet_frame, text="패킷 알림")
+    alert_frame.grid(row=2, column=0, columnspan=3, sticky="nsew", padx=8, pady=(6, 0))
+    alert_frame.columnconfigure(0, weight=1)
+    alert_frame.rowconfigure(1, weight=1)
+
+    alert_entry = ttk.Entry(alert_frame)
+    alert_entry.grid(row=0, column=0, sticky="ew", padx=(0, 6), pady=6)
+    alert_listbox = tk.Listbox(alert_frame, height=4)
+    alert_listbox.grid(row=1, column=0, sticky="nsew")
+    alert_scroll = ttk.Scrollbar(alert_frame, orient="vertical", command=alert_listbox.yview)
+    alert_listbox.configure(yscrollcommand=alert_scroll.set)
+    alert_scroll.grid(row=1, column=1, sticky="ns")
+
+    packet_text = tk.Text(packet_frame, wrap="word", height=8, state="disabled")
+    packet_text.grid(row=3, column=0, columnspan=3, sticky="nsew", padx=8, pady=8)
+    packet_text_scroll = ttk.Scrollbar(packet_frame, orient="vertical", command=packet_text.yview)
+    packet_text.configure(yscrollcommand=packet_text_scroll.set)
+    packet_text_scroll.grid(row=3, column=3, sticky="ns", pady=8)
+
+    def append_packet_text(text: str) -> None:
+        packet_text.configure(state="normal")
+        packet_text.insert(tk.END, text if text.endswith("\n") else text + "\n")
+        packet_text.see(tk.END)
+        packet_text.configure(state="disabled")
+
+    def log_packet_alert(keyword: str, payload: str) -> None:
+        append_packet_text(f"[알림] '{keyword}' 포함 패킷 감지: {payload}\n")
+        print(f"[패킷 알림] '{keyword}' 문자열이 포함된 패킷이 감지되었습니다.")
+
+    def refresh_alerts() -> None:
+        alert_listbox.delete(0, tk.END)
+        for text in alert_keywords:
+            alert_listbox.insert(tk.END, text)
+
+    def add_alert_keyword() -> None:
+        keyword = alert_entry.get().strip()
+        if not keyword:
+            messagebox.showinfo("알림 문자열", "등록할 문자열을 입력하세요.")
+            return
+        if keyword not in alert_keywords:
+            alert_keywords.append(keyword)
+            refresh_alerts()
+            alert_entry.delete(0, tk.END)
+        else:
+            messagebox.showinfo("알림 문자열", "이미 등록된 문자열입니다.")
+
+    def remove_selected_alert() -> None:
+        selection = alert_listbox.curselection()
+        if not selection:
+            return
+        keyword = alert_listbox.get(selection[0])
+        alert_keywords.remove(keyword)
+        refresh_alerts()
+
+    def get_port_value() -> int | None:
+        try:
+            port_value = int(packet_port_var.get())
+        except ValueError:
+            messagebox.showerror("포트 오류", "포트 번호를 숫자로 입력하세요.")
+            return None
+        if port_value <= 0 or port_value > 65535:
+            messagebox.showerror("포트 오류", "포트 번호는 1~65535 사이여야 합니다.")
+            return None
+        return port_value
+
+    def start_packet_capture() -> None:
+        if packet_manager.running:
+            messagebox.showinfo("패킷 캡쳐", "이미 캡쳐가 진행 중입니다.")
+            return
+        port_value = get_port_value()
+        if port_value is None:
+            return
+        try:
+            packet_manager.set_port(port_value)
+        except ValueError as exc:
+            messagebox.showerror("포트 오류", str(exc))
+            return
+        packet_manager.set_alerts(alert_keywords)
+        packet_manager.start()
+        packet_status_var.set(f"포트 {port_value} 캡쳐 중...")
+        start_capture_btn.configure(state="disabled")
+        stop_capture_btn.configure(state="normal")
+
+    def stop_packet_capture() -> None:
+        packet_manager.stop()
+        packet_status_var.set("패킷 캡쳐 중지됨")
+        start_capture_btn.configure(state="normal")
+        stop_capture_btn.configure(state="disabled")
+
+    ttk.Button(alert_frame, text="문자열 등록", command=add_alert_keyword).grid(
+        row=0, column=1, sticky="ew", pady=6
+    )
+    ttk.Button(alert_frame, text="선택 삭제", command=remove_selected_alert).grid(
+        row=2, column=0, columnspan=2, sticky="ew", pady=(6, 6)
+    )
+
+    start_capture_btn.configure(command=start_packet_capture)
+    stop_capture_btn.configure(command=stop_packet_capture)
+
     def on_hotkey_press(key: keyboard.Key) -> None:
         if key == keyboard.Key.f1:
             root.after(0, controller.run_step)
@@ -234,6 +362,7 @@ def build_gui() -> None:
     def on_close() -> None:
         if hotkey_listener is not None:
             hotkey_listener.stop()
+        stop_packet_capture()
         stop_repeat()
         root.destroy()
 
