@@ -4,10 +4,12 @@ macOS에서 최상단에 고정된 창을 제공하며, 실행/다시 버튼으�
 순차 동작을 제어합니다.
 """
 
+import json
 import threading
 import time
 import tkinter as tk
 from collections import deque
+from pathlib import Path
 from tkinter import messagebox, ttk
 from typing import Callable
 
@@ -15,6 +17,24 @@ from makr.packet import PacketCaptureManager
 
 import pyautogui
 from pynput import keyboard, mouse
+
+APP_STATE_PATH = Path(__file__).with_name("app_state.json")
+
+
+def load_app_state() -> dict:
+    if not APP_STATE_PATH.exists():
+        return {}
+    try:
+        return json.loads(APP_STATE_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def save_app_state(state: dict) -> None:
+    try:
+        APP_STATE_PATH.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError:
+        messagebox.showwarning("설정 저장", "입력값을 저장하는 중 오류가 발생했습니다.")
 
 
 class MacroController:
@@ -97,11 +117,13 @@ def build_gui() -> None:
     root.title("단계별 자동화")
     root.attributes("-topmost", True)
 
+    saved_state = load_app_state()
+
     status_var = tk.StringVar()
-    click_delay_var = tk.StringVar(value="100")
-    step_transition_delay_var = tk.StringVar(value="200")
+    click_delay_var = tk.StringVar(value=str(saved_state.get("click_delay_ms", "100")))
+    step_transition_delay_var = tk.StringVar(value=str(saved_state.get("step_transition_delay_ms", "200")))
     packet_status_var = tk.StringVar(value="패킷 캡쳐 중지됨")
-    alert_keywords: list[str] = []
+    alert_keywords: list[str] = list(saved_state.get("alert_keywords", []))
 
     entries: dict[str, tuple[tk.Entry, tk.Entry]] = {}
     packet_queue: deque[str] = deque()
@@ -142,11 +164,11 @@ def build_gui() -> None:
         tk.Label(frame, text=label_text, width=8, anchor="w").pack(side="left")
         x_entry = tk.Entry(frame, width=6)
         x_entry.pack(side="left", padx=(0, 4))
-        x_entry.insert(0, "0")
+        x_entry.insert(0, str(saved_state.get("coordinates", {}).get(key, {}).get("x", "0")))
 
         y_entry = tk.Entry(frame, width=6)
         y_entry.pack(side="left")
-        y_entry.insert(0, "0")
+        y_entry.insert(0, str(saved_state.get("coordinates", {}).get(key, {}).get("y", "0")))
 
         entries[key] = (x_entry, y_entry)
 
@@ -234,7 +256,7 @@ def build_gui() -> None:
     packet_status_label.grid(row=0, column=0, columnspan=3, sticky="w", padx=8, pady=(8, 4))
 
     ttk.Label(packet_frame, text="포트").grid(row=1, column=0, sticky="w", padx=8)
-    packet_port_var = tk.StringVar(value="32800")
+    packet_port_var = tk.StringVar(value=str(saved_state.get("packet_port", "32800")))
     packet_port_entry = ttk.Entry(packet_frame, textvariable=packet_port_var, width=10)
     packet_port_entry.grid(row=1, column=1, sticky="w")
 
@@ -341,6 +363,18 @@ def build_gui() -> None:
         alert_keywords.remove(keyword)
         refresh_alerts()
 
+    def collect_app_state() -> dict:
+        coordinates: dict[str, dict[str, str]] = {}
+        for key, (x_entry, y_entry) in entries.items():
+            coordinates[key] = {"x": x_entry.get(), "y": y_entry.get()}
+        return {
+            "coordinates": coordinates,
+            "click_delay_ms": click_delay_var.get(),
+            "step_transition_delay_ms": step_transition_delay_var.get(),
+            "packet_port": packet_port_var.get(),
+            "alert_keywords": alert_keywords,
+        }
+
     def get_port_value() -> int | None:
         try:
             port_value = int(packet_port_var.get())
@@ -400,6 +434,8 @@ def build_gui() -> None:
     ttk.Button(alert_frame, text="선택 삭제", command=remove_selected_alert).grid(
         row=2, column=0, columnspan=2, sticky="ew", pady=(6, 6)
     )
+
+    refresh_alerts()
 
     start_capture_btn.configure(command=start_packet_capture)
     stop_capture_btn.configure(command=stop_packet_capture)
@@ -461,6 +497,7 @@ def build_gui() -> None:
         hotkey_listener.start()
 
     def on_close() -> None:
+        save_app_state(collect_app_state())
         if hotkey_listener is not None:
             hotkey_listener.stop()
         stop_packet_capture()
