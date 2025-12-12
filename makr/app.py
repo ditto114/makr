@@ -316,12 +316,11 @@ def build_gui() -> None:
     channel_info_window: tk.Toplevel | None = None
     channel_treeview: ttk.Treeview | None = None
 
-    def format_timestamp(ts_ms: int) -> str:
-        seconds, milliseconds = divmod(ts_ms, 1000)
-        return f"{time.strftime('%H:%M:%S', time.localtime(seconds))}.{milliseconds:03d}"
+    def format_timestamp(ts_sec: int) -> str:
+        return time.strftime('%H:%M:%S', time.localtime(ts_sec))
 
     def append_packet_group(
-        timestamp_ms: int, payloads: list[str], *, label_prefix: str | None = None
+        timestamp_sec: int, payloads: list[str], *, label_prefix: str | None = None
     ) -> None:
         nonlocal packet_counter
 
@@ -331,7 +330,7 @@ def build_gui() -> None:
 
         packet_counter += 1
         prefix = f"{label_prefix} " if label_prefix else ""
-        parent_label = f"{packet_counter}. {prefix}{format_timestamp(timestamp_ms)} ({len(payloads)}개)"
+        parent_label = f"{packet_counter}. {prefix}{format_timestamp(timestamp_sec)} ({len(payloads)}개)"
         parent_id = packet_tree.insert("", "end", text=parent_label, open=False)
 
         for payload in payloads:
@@ -372,11 +371,11 @@ def build_gui() -> None:
             packet_flush_job = None
 
         grouped_payloads: dict[int, list[str]] = {}
-        for timestamp_ms, payload in batch:
-            grouped_payloads.setdefault(timestamp_ms, []).append(payload)
+        for timestamp_sec, payload in batch:
+            grouped_payloads.setdefault(timestamp_sec, []).append(payload)
 
-        for timestamp_ms, payloads in grouped_payloads.items():
-            append_packet_group(timestamp_ms, payloads)
+        for timestamp_sec, payloads in grouped_payloads.items():
+            append_packet_group(timestamp_sec, payloads)
 
     def schedule_packet_flush() -> None:
         nonlocal packet_flush_job
@@ -388,20 +387,18 @@ def build_gui() -> None:
         return any(keyword in payload for keyword in alert_keywords)
 
     def enqueue_packet_text(text: str) -> None:
-        timestamp_ms = int(time.time() * 1000)
+        timestamp_sec = int(time.time())
         is_registered_match = matches_registered_keyword(text)
         if is_registered_match:
             with packet_queue_lock:
-                packet_queue.append((timestamp_ms, text))
+                packet_queue.append((timestamp_sec, text))
             root.after(0, schedule_packet_flush)
         root.after(0, handle_channel_detection, text)
         root.after(0, handle_channel_alert_detection, text)
         root.after(0, extract_and_store_channel_names, text, is_registered_match)
 
     def log_packet_alert(keyword: str, payload: str) -> None:
-        append_packet_group(
-            int(time.time() * 1000), [payload], label_prefix=f"[알림] '{keyword}'"
-        )
+        append_packet_group(int(time.time()), [payload], label_prefix=f"[알림] '{keyword}'")
         print(f"[패킷 알림] '{keyword}' 문자열이 포함된 패킷이 감지되었습니다.")
 
     def refresh_alerts() -> None:
