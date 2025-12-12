@@ -10,6 +10,7 @@ from typing import Dict, List, Optional
 
 from .execution import ExecutionContext, ExecutionError, execute_macro
 from .macro import Macro, MacroNode
+from .packet import PacketCaptureManager
 from .storage import load_macro, save_macro
 
 try:
@@ -35,8 +36,16 @@ class MacroEditorApp(tk.Tk):
         self._drag_target: Optional[str] = None
         self._drag_insert_after = False
         self._drag_moved = False
+        self.packet_status_var = tk.StringVar(value="패킷 캡쳐 중지됨")
+        self._packet_alerts: List[str] = []
         self._build_ui()
         self._refresh_tree()
+        self._init_packet_capture_manager()
+
+    def destroy(self) -> None:
+        if hasattr(self, "packet_capture_manager"):
+            self.packet_capture_manager.stop()
+        super().destroy()
 
     # UI 구성 ---------------------------------------------------------------
     def _build_ui(self) -> None:
@@ -107,15 +116,52 @@ class MacroEditorApp(tk.Tk):
         self.log_text.configure(yscrollcommand=log_scroll.set)
         log_scroll.grid(row=0, column=1, sticky="ns", pady=8)
 
-        packet_group = ttk.LabelFrame(right_frame, text="감지된 패킷 내용")
+        packet_group = ttk.LabelFrame(right_frame, text="패킷 캡쳐")
         packet_group.grid(row=2, column=0, sticky="nsew", pady=(10, 0))
         packet_group.columnconfigure(0, weight=1)
-        packet_group.rowconfigure(0, weight=1)
+        packet_group.columnconfigure(1, weight=1)
+        packet_group.rowconfigure(3, weight=1)
+
+        ttk.Label(packet_group, textvariable=self.packet_status_var, foreground="#0a5").grid(
+            row=0, column=0, columnspan=2, sticky="w", padx=8, pady=(8, 4)
+        )
+
+        control_frame = ttk.Frame(packet_group)
+        control_frame.grid(row=1, column=0, columnspan=2, sticky="ew", padx=8)
+        control_frame.columnconfigure(0, weight=1)
+        control_frame.columnconfigure(1, weight=1)
+        self.packet_start_button = ttk.Button(
+            control_frame, text="캡쳐 시작", command=self._start_packet_capture
+        )
+        self.packet_start_button.grid(row=0, column=0, sticky="ew", padx=2)
+        self.packet_stop_button = ttk.Button(
+            control_frame, text="캡쳐 중지", command=self._stop_packet_capture, state="disabled"
+        )
+        self.packet_stop_button.grid(row=0, column=1, sticky="ew", padx=2)
+
+        alert_frame = ttk.LabelFrame(packet_group, text="패킷 알림")
+        alert_frame.grid(row=2, column=0, columnspan=2, sticky="nsew", padx=8, pady=(6, 0))
+        alert_frame.columnconfigure(0, weight=1)
+        alert_frame.rowconfigure(1, weight=1)
+        self.alert_entry = ttk.Entry(alert_frame)
+        self.alert_entry.grid(row=0, column=0, sticky="ew", padx=(0, 6), pady=6)
+        ttk.Button(alert_frame, text="문자열 등록", command=self._add_alert_keyword).grid(
+            row=0, column=1, sticky="ew", pady=6
+        )
+        self.alert_listbox = tk.Listbox(alert_frame, height=4)
+        self.alert_listbox.grid(row=1, column=0, sticky="nsew")
+        alert_scroll = ttk.Scrollbar(alert_frame, orient="vertical", command=self.alert_listbox.yview)
+        self.alert_listbox.configure(yscrollcommand=alert_scroll.set)
+        alert_scroll.grid(row=1, column=1, sticky="ns")
+        ttk.Button(alert_frame, text="선택 삭제", command=self._remove_selected_alert).grid(
+            row=2, column=0, columnspan=2, sticky="ew", pady=(6, 6)
+        )
+
         self.packet_text_display = tk.Text(packet_group, wrap="word", height=6, state="disabled")
-        self.packet_text_display.grid(row=0, column=0, sticky="nsew", padx=8, pady=8)
+        self.packet_text_display.grid(row=3, column=0, sticky="nsew", padx=8, pady=8)
         packet_scroll = ttk.Scrollbar(packet_group, orient="vertical", command=self.packet_text_display.yview)
         self.packet_text_display.configure(yscrollcommand=packet_scroll.set)
-        packet_scroll.grid(row=0, column=1, sticky="ns", pady=8)
+        packet_scroll.grid(row=3, column=1, sticky="ns", pady=8)
 
         control_frame = ttk.Frame(right_frame)
         control_frame.grid(row=3, column=0, sticky="ew", pady=(10, 0))
@@ -128,6 +174,13 @@ class MacroEditorApp(tk.Tk):
         self.stop_button = ttk.Button(control_frame, text="실행 중지", command=self._stop_execution, state="disabled")
         self.stop_button.grid(row=0, column=1, sticky="ew", padx=2)
         ttk.Button(control_frame, text="매크로 새로 만들기", command=self._new_macro).grid(row=0, column=2, sticky="ew", padx=2)
+
+    def _init_packet_capture_manager(self) -> None:
+        self.packet_capture_manager = PacketCaptureManager(
+            on_packet=self._threadsafe_on_packet,
+            on_alert=self._threadsafe_on_packet_alert,
+            on_error=self._threadsafe_on_packet_error,
+        )
 
     def _create_menu(self) -> None:
         menubar = tk.Menu(self)
@@ -435,6 +488,73 @@ class MacroEditorApp(tk.Tk):
         self.packet_text_display.see("end")
         self.packet_text_display.configure(state="disabled")
 
+    def _threadsafe_on_packet(self, payload: str) -> None:
+        self.after(0, lambda: self._display_captured_packet(payload))
+
+    def _threadsafe_on_packet_alert(self, keyword: str, payload: str) -> None:
+        self.after(0, lambda: self._handle_packet_alert(keyword, payload))
+
+    def _threadsafe_on_packet_error(self, message: str) -> None:
+        self.after(0, lambda: self._handle_packet_error(message))
+
+    def _display_captured_packet(self, payload: str) -> None:
+        if not payload:
+            return
+        self.packet_text_display.configure(state="normal")
+        self.packet_text_display.insert("end", payload + "\n")
+        self.packet_text_display.see("end")
+        self.packet_text_display.configure(state="disabled")
+
+    def _handle_packet_alert(self, keyword: str, payload: str) -> None:
+        self._append_log(f"패킷 알림: '{keyword}' 문자열이 감지되었습니다.")
+        self._display_captured_packet(payload)
+
+    def _handle_packet_error(self, message: str) -> None:
+        self.packet_status_var.set("패킷 캡쳐 오류")
+        self._append_log(f"[패킷 오류] {message}")
+        self.packet_start_button.configure(state="normal")
+        self.packet_stop_button.configure(state="disabled")
+
+    def _start_packet_capture(self) -> None:
+        self.packet_capture_manager.set_alerts(self._packet_alerts)
+        self.packet_capture_manager.start()
+        if self.packet_capture_manager.running:
+            self.packet_status_var.set("패킷 캡쳐 실행 중 (포트 32800)")
+            self.packet_start_button.configure(state="disabled")
+            self.packet_stop_button.configure(state="normal")
+        else:
+            self.packet_status_var.set("패킷 캡쳐 시작 실패")
+
+    def _stop_packet_capture(self) -> None:
+        self.packet_capture_manager.stop()
+        self.packet_status_var.set("패킷 캡쳐 중지됨")
+        self.packet_start_button.configure(state="normal")
+        self.packet_stop_button.configure(state="disabled")
+
+    def _add_alert_keyword(self) -> None:
+        text = self.alert_entry.get().strip()
+        if not text:
+            messagebox.showinfo("알림 등록", "알림에 사용할 문자열을 입력하세요.")
+            return
+        if text in self._packet_alerts:
+            messagebox.showinfo("알림 등록", "이미 등록된 문자열입니다.")
+            return
+        self._packet_alerts.append(text)
+        self.alert_listbox.insert("end", text)
+        self.packet_capture_manager.set_alerts(self._packet_alerts)
+        self.alert_entry.delete(0, "end")
+
+    def _remove_selected_alert(self) -> None:
+        selection = list(self.alert_listbox.curselection())
+        if not selection:
+            return
+        for index in reversed(selection):
+            text = self.alert_listbox.get(index)
+            self.alert_listbox.delete(index)
+            if text in self._packet_alerts:
+                self._packet_alerts.remove(text)
+        self.packet_capture_manager.set_alerts(self._packet_alerts)
+
     def _start_execution(self) -> None:
         if self._execution_thread and self._execution_thread.is_alive():
             messagebox.showwarning("실행 중", "이미 매크로가 실행 중입니다.")
@@ -583,12 +703,15 @@ class ConditionDialog(BaseDialog):
         ttk.Entry(container, textvariable=self.title_var).grid(row=0, column=1, sticky="ew")
 
         ttk.Label(container, text="조건 유형").grid(row=1, column=0, sticky="w", pady=(8, 0))
-        self.type_var = tk.StringVar(value=(self.initial.config.get("type") if self.initial else "wait"))
+        initial_type = self.initial.config.get("type") if self.initial else "wait"
+        if initial_type not in {"wait"}:
+            initial_type = "wait"
+        self.type_var = tk.StringVar(value=initial_type)
         type_combo = ttk.Combobox(
             container,
             textvariable=self.type_var,
             state="readonly",
-            values=("wait", "packet"),
+            values=("wait",),
         )
         type_combo.grid(row=1, column=1, sticky="ew", pady=(8, 0))
         type_combo.bind("<<ComboboxSelected>>", lambda _e: self._update_fields())
@@ -598,45 +721,14 @@ class ConditionDialog(BaseDialog):
         ttk.Label(self.wait_frame, text="대기 시간 (초)").grid(row=0, column=0, sticky="w")
         ttk.Entry(self.wait_frame, textvariable=self.wait_seconds).grid(row=0, column=1, sticky="ew")
 
-        self.packet_frame = ttk.LabelFrame(container, text="패킷 감지 조건")
-        self.packet_ip = tk.StringVar(value=self.initial.config.get("ip", "") if self.initial else "")
-        if self.initial:
-            try:
-                initial_port = int(self.initial.config.get("port", 32800))
-            except (TypeError, ValueError):
-                initial_port = 32800
-            try:
-                initial_timeout = float(self.initial.config.get("timeout", 30.0))
-            except (TypeError, ValueError):
-                initial_timeout = 30.0
-        else:
-            initial_port = 32800
-            initial_timeout = 30.0
-        ttk.Label(self.packet_frame, text="IP 주소").grid(row=0, column=0, sticky="w")
-        ttk.Entry(self.packet_frame, textvariable=self.packet_ip).grid(row=0, column=1, sticky="ew")
-        self.packet_port = tk.IntVar(value=initial_port)
-        ttk.Label(self.packet_frame, text="포트").grid(row=1, column=0, sticky="w", pady=(6, 0))
-        ttk.Entry(self.packet_frame, textvariable=self.packet_port).grid(row=1, column=1, sticky="ew", pady=(6, 0))
-        self.packet_timeout = tk.DoubleVar(value=initial_timeout)
-        ttk.Label(self.packet_frame, text="타임아웃 (초, 0이면 무제한)").grid(row=2, column=0, sticky="w", pady=(6, 0))
-        ttk.Entry(self.packet_frame, textvariable=self.packet_timeout).grid(row=2, column=1, sticky="ew", pady=(6, 0))
-        self.packet_text = tk.StringVar(value=self.initial.config.get("detect_text", "") if self.initial else "")
-        ttk.Label(self.packet_frame, text="감지 문자열 (선택)").grid(row=3, column=0, sticky="w", pady=(6, 0))
-        ttk.Entry(self.packet_frame, textvariable=self.packet_text).grid(row=3, column=1, sticky="ew", pady=(6, 0))
-        self.packet_frame.columnconfigure(1, weight=1)
-
         self.wait_frame.grid(row=2, column=0, columnspan=2, sticky="nsew", pady=(10, 0))
-        self.packet_frame.grid(row=2, column=0, columnspan=2, sticky="nsew", pady=(10, 0))
         self._update_fields()
 
     def _update_fields(self) -> None:
         mode = self.type_var.get()
         self.wait_frame.grid_remove()
-        self.packet_frame.grid_remove()
         if mode == "wait":
             self.wait_frame.grid()
-        else:
-            self.packet_frame.grid()
 
     def apply(self) -> None:
         title = self.title_var.get().strip() or "조건"
@@ -647,13 +739,7 @@ class ConditionDialog(BaseDialog):
                 raise ValueError("대기 시간은 0 이상이어야 합니다.")
             config = {"type": "wait", "seconds": seconds}
         else:
-            config = {
-                "type": "packet",
-                "ip": self.packet_ip.get().strip(),
-                "port": int(self.packet_port.get()),
-                "timeout": float(self.packet_timeout.get()),
-                "detect_text": self.packet_text.get().strip(),
-            }
+            raise ValueError("지원되지 않는 조건 유형입니다.")
         self.result = DialogResult(title=title, config=config)
 
 
