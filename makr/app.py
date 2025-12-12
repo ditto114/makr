@@ -98,18 +98,17 @@ def build_gui() -> None:
     root.attributes("-topmost", True)
 
     status_var = tk.StringVar()
-    repeat_delay_var = tk.StringVar(value="750")
     click_delay_var = tk.StringVar(value="100")
     step_transition_delay_var = tk.StringVar(value="200")
     packet_status_var = tk.StringVar(value="패킷 캡쳐 중지됨")
-    repeat_running = False
-    repeat_job_id: str | None = None
     alert_keywords: list[str] = []
 
     entries: dict[str, tuple[tk.Entry, tk.Entry]] = {}
     packet_queue: deque[str] = deque()
     packet_queue_lock = threading.Lock()
     packet_flush_job: str | None = None
+    channel_cycle_running = False
+    channel_waiting_for_packet = False
     capture_listener: mouse.Listener | None = None
     hotkey_listener: keyboard.Listener | None = None
     packet_manager = PacketCaptureManager(
@@ -129,9 +128,6 @@ def build_gui() -> None:
             delay_ms = 0
         var.set(str(delay_ms))
         return delay_ms
-
-    def get_repeat_delay_ms() -> int:
-        return _parse_delay_ms(repeat_delay_var, "반복 딜레이", 750)
 
     def get_click_delay_ms() -> int:
         return _parse_delay_ms(click_delay_var, "1단계 클릭 딜레이", 100)
@@ -219,7 +215,6 @@ def build_gui() -> None:
         tk.Entry(row, textvariable=var, width=8).pack(side="left", padx=(0, 6))
         tk.Label(row, text=description).pack(side="left")
 
-    add_delay_input("F3 반복 딜레이 (ms)", repeat_delay_var, "반복 실행 사이 대기 시간을 설정합니다.")
     add_delay_input("1단계 클릭 간 (ms)", click_delay_var, "pos1 → pos2 클릭 사이 지연입니다.")
     add_delay_input(
         "1→2단계 전환 (ms)",
@@ -315,6 +310,7 @@ def build_gui() -> None:
         with packet_queue_lock:
             packet_queue.append(text)
         root.after(0, schedule_packet_flush)
+        root.after(0, handle_channel_detection, text)
 
     def log_packet_alert(keyword: str, payload: str) -> None:
         append_packet_payload(payload, summary=f"[알림] '{keyword}' 포함 패킷")
@@ -408,54 +404,54 @@ def build_gui() -> None:
     start_capture_btn.configure(command=start_packet_capture)
     stop_capture_btn.configure(command=stop_packet_capture)
 
+    def run_channel_cycle_once() -> None:
+        nonlocal channel_waiting_for_packet
+        if not channel_cycle_running:
+            return
+        controller.reset_and_run_first()
+        channel_waiting_for_packet = True
+        status_var.set("'Channel' 문자열 포함 패킷을 기다리는 중입니다.")
+
+    def handle_channel_detection(payload: str) -> None:
+        nonlocal channel_waiting_for_packet
+        if not (channel_cycle_running and channel_waiting_for_packet):
+            return
+        if "Channel" not in payload:
+            return
+        channel_waiting_for_packet = False
+        status_var.set("'Channel' 패킷 감지! 2단계를 실행합니다.")
+        controller.run_step()
+        if channel_cycle_running:
+            root.after(0, run_channel_cycle_once)
+
+    def stop_channel_cycle() -> None:
+        nonlocal channel_cycle_running, channel_waiting_for_packet
+        channel_cycle_running = False
+        channel_waiting_for_packet = False
+        status_var.set("Channel 감지 반복을 종료했습니다.")
+
+    def start_channel_cycle() -> None:
+        nonlocal channel_cycle_running
+        if channel_cycle_running:
+            status_var.set("Channel 감지 반복이 이미 실행 중입니다.")
+            return
+        channel_cycle_running = True
+        status_var.set("F2 실행 후 'Channel' 감지까지 대기합니다.")
+        run_channel_cycle_once()
+
+    def toggle_channel_cycle() -> None:
+        if channel_cycle_running:
+            stop_channel_cycle()
+        else:
+            start_channel_cycle()
+
     def on_hotkey_press(key: keyboard.Key) -> None:
         if key == keyboard.Key.f1:
             root.after(0, controller.run_step)
         elif key == keyboard.Key.f2:
             root.after(0, controller.reset_and_run_first)
         elif key == keyboard.Key.f3:
-            root.after(0, toggle_repeat)
-
-    def schedule_next_repeat() -> None:
-        nonlocal repeat_job_id
-        delay_ms = get_repeat_delay_ms()
-        repeat_job_id = root.after(delay_ms, run_repeat_cycle)
-
-    def run_repeat_cycle() -> None:
-        if not repeat_running:
-            return
-        controller.reset_and_run_first()
-
-        def run_first_step_after_delay() -> None:
-            if not repeat_running:
-                return
-            controller.run_step()
-            if repeat_running:
-                schedule_next_repeat()
-
-        transition_delay_ms = controller.step_transition_delay_provider()
-        root.after(transition_delay_ms, run_first_step_after_delay)
-
-    def stop_repeat() -> None:
-        nonlocal repeat_running, repeat_job_id
-        repeat_running = False
-        if repeat_job_id is not None:
-            root.after_cancel(repeat_job_id)
-            repeat_job_id = None
-        status_var.set("반복 실행을 종료했습니다.")
-
-    def start_repeat() -> None:
-        nonlocal repeat_running
-        repeat_running = True
-        delay_ms = get_repeat_delay_ms()
-        status_var.set(f"F2 → F1 반복을 시작합니다. (딜레이 {delay_ms}ms)")
-        run_repeat_cycle()
-
-    def toggle_repeat() -> None:
-        if repeat_running:
-            stop_repeat()
-        else:
-            start_repeat()
+            root.after(0, toggle_channel_cycle)
 
     def start_hotkey_listener() -> None:
         nonlocal hotkey_listener
@@ -468,7 +464,7 @@ def build_gui() -> None:
         if hotkey_listener is not None:
             hotkey_listener.stop()
         stop_packet_capture()
-        stop_repeat()
+        stop_channel_cycle()
         root.destroy()
 
     start_hotkey_listener()
