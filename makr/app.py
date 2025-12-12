@@ -76,35 +76,40 @@ class MacroController:
     def _delay_seconds(self, delay_ms: int) -> float:
         return max(delay_ms, 0) / 1000
 
-    def run_step(self) -> None:
+    def run_step(self, *, use_pos4_after_pos2: bool = False) -> None:
         """실행 버튼 콜백: 현재 단계 수행 후 다음 단계로 이동."""
         if self.current_step == 1:
-            self._run_step_one()
+            self._run_step_one(use_pos4_after_pos2)
             self.current_step = 2
         else:
             self._run_step_two()
             self.current_step = 1
         self._update_status()
 
-    def reset_and_run_first(self) -> None:
+    def reset_and_run_first(self, *, use_pos4_after_pos2: bool = False) -> None:
         """다시 버튼 콜백: Esc 입력 후 1단계를 재실행."""
         pyautogui.press("esc")
         self.current_step = 1
         self._update_status()
-        self._run_step_one()
+        self._run_step_one(use_pos4_after_pos2)
         self.current_step = 2
         self._update_status()
 
-    def _run_step_one(self) -> None:
+    def _run_step_one(self, use_pos4_after_pos2: bool) -> None:
         pos1 = self._get_point("pos1")
         pos2 = self._get_point("pos2")
         if pos1 is None or pos2 is None:
+            return
+        pos4 = self._get_point("pos4") if use_pos4_after_pos2 else None
+        if use_pos4_after_pos2 and pos4 is None:
             return
         self._click_point(pos1)
         click_delay_sec = self._delay_seconds(self.click_delay_provider())
         if click_delay_sec:
             time.sleep(click_delay_sec)
         self._click_point(pos2)
+        if use_pos4_after_pos2 and pos4 is not None:
+            self._click_point(pos4)
 
     def _run_step_two(self) -> None:
         pos3 = self._get_point("pos3")
@@ -127,6 +132,7 @@ def build_gui() -> None:
     channel_wait_window_var = tk.StringVar(value=str(saved_state.get("channel_wait_window_ms", "500")))
     packet_limit_var = tk.StringVar(value=str(saved_state.get("packet_limit", "200")))
     packet_status_var = tk.StringVar(value="패킷 캡쳐 중지됨")
+    newline_var = tk.BooleanVar(value=bool(saved_state.get("newline_after_pos2", False)))
     channel_names: set[str] = set(saved_state.get("channel_names", []))
 
     entries: dict[str, tuple[tk.Entry, tk.Entry]] = {}
@@ -208,11 +214,16 @@ def build_gui() -> None:
         register_button = tk.Button(frame, text="클릭으로 등록", command=start_capture)
         register_button.pack(side="left", padx=(6, 0))
 
-    tk.Label(root, text="좌표는 화면 기준 픽셀 단위로 입력하세요 (X, Y).", fg="#444").pack(pady=(10, 0))
+    top_bar = tk.Frame(root)
+    top_bar.pack(fill="x", pady=(6, 0))
+    tk.Checkbutton(top_bar, text="줄바꿈", variable=newline_var).pack(side="right", padx=(0, 12))
+
+    tk.Label(root, text="좌표는 화면 기준 픽셀 단위로 입력하세요 (X, Y).", fg="#444").pack(pady=(6, 0))
 
     add_coordinate_row("pos1", "pos1")
     add_coordinate_row("pos2", "pos2")
     add_coordinate_row("pos3", "pos3")
+    add_coordinate_row("pos4", "pos4")
 
     controller = MacroController(
         entries,
@@ -402,6 +413,7 @@ def build_gui() -> None:
             "channel_wait_window_ms": channel_wait_window_var.get(),
             "packet_port": packet_port_var.get(),
             "packet_limit": packet_limit_var.get(),
+            "newline_after_pos2": newline_var.get(),
             "channel_names": sorted(channel_names),
         }
 
@@ -499,13 +511,15 @@ def build_gui() -> None:
         def __init__(self) -> None:
             self.running = False
             self.packet_queue: Queue[tuple[float, bool]] = Queue()
+            self.use_pos4_after_pos2 = False
 
-        def start(self) -> None:
+        def start(self, use_pos4_after_pos2: bool) -> None:
             if self.running:
                 messagebox.showinfo("매크로", "F3 매크로가 이미 실행 중입니다.")
                 return
             self.running = True
             self._clear_queue()
+            self.use_pos4_after_pos2 = use_pos4_after_pos2
             threading.Thread(target=self._run_sequence, daemon=True).start()
 
         def stop(self) -> None:
@@ -566,7 +580,11 @@ def build_gui() -> None:
             try:
                 while self.running:
                     self._set_status("F3: F2 기능 실행 중…")
-                    self._run_on_main(controller.reset_and_run_first)
+                    self._run_on_main(
+                        lambda: controller.reset_and_run_first(
+                            use_pos4_after_pos2=self.use_pos4_after_pos2
+                        )
+                    )
 
                     self._set_status("F3: Channel 문자열을 기다리는 중…")
                     first_packet = self._get_packet(timeout=None)
@@ -575,19 +593,40 @@ def build_gui() -> None:
 
                     log_detected = first_packet[1]
                     wait_window_sec = self._delay_seconds(get_channel_wait_window_ms())
+                    detection_deadline = time.time() + wait_window_sec if log_detected else None
+                    should_run_macro = False
 
                     while self.running:
-                        next_packet = self._get_packet(timeout=wait_window_sec)
+                        timeout = wait_window_sec
+                        if detection_deadline is not None:
+                            timeout = max(detection_deadline - time.time(), 0)
+
+                        next_packet = self._get_packet(timeout=timeout)
                         if next_packet is None:
+                            if log_detected and detection_deadline is not None:
+                                should_run_macro = True
                             break
+
                         log_detected = log_detected or next_packet[1]
+                        if log_detected and detection_deadline is None:
+                            detection_deadline = time.time() + wait_window_sec
+
+                        if (
+                            log_detected
+                            and detection_deadline is not None
+                            and time.time() >= detection_deadline
+                        ):
+                            should_run_macro = True
+                            break
 
                     if not self.running:
                         break
 
-                    if log_detected:
+                    if should_run_macro and log_detected:
                         self._set_status("F3: 조건 충족, F1 실행 중…")
-                        self._run_on_main(controller.run_step)
+                        self._run_on_main(
+                            lambda: controller.run_step(use_pos4_after_pos2=self.use_pos4_after_pos2)
+                        )
                         break
 
                     self._set_status("F3: 새 채널 미감지, 재시도…")
@@ -684,7 +723,7 @@ def build_gui() -> None:
                 status_var.set("F3 매크로가 종료되었습니다.")
                 controller._update_status()
             else:
-                channel_detection_sequence.start()
+                channel_detection_sequence.start(newline_var.get())
 
     def start_hotkey_listener() -> None:
         nonlocal hotkey_listener
