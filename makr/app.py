@@ -10,6 +10,7 @@ import threading
 import time
 import tkinter as tk
 from collections import deque
+from queue import Empty, Queue
 from pathlib import Path
 from tkinter import messagebox, ttk
 from typing import Callable
@@ -123,6 +124,7 @@ def build_gui() -> None:
     status_var = tk.StringVar()
     click_delay_var = tk.StringVar(value=str(saved_state.get("click_delay_ms", "100")))
     step_transition_delay_var = tk.StringVar(value=str(saved_state.get("step_transition_delay_ms", "200")))
+    channel_wait_window_var = tk.StringVar(value=str(saved_state.get("channel_wait_window_ms", "500")))
     packet_limit_var = tk.StringVar(value=str(saved_state.get("packet_limit", "200")))
     packet_status_var = tk.StringVar(value="패킷 캡쳐 중지됨")
     channel_names: set[str] = set(saved_state.get("channel_names", []))
@@ -155,6 +157,9 @@ def build_gui() -> None:
 
     def get_step_transition_delay_ms() -> int:
         return _parse_delay_ms(step_transition_delay_var, "1→2단계 전환 딜레이", 200)
+
+    def get_channel_wait_window_ms() -> int:
+        return _parse_delay_ms(channel_wait_window_var, "채널 감지 대기", 500)
 
     def add_coordinate_row(label_text: str, key: str) -> None:
         frame = tk.Frame(root)
@@ -241,6 +246,11 @@ def build_gui() -> None:
         "1→2단계 전환 (ms)",
         step_transition_delay_var,
         "반복 실행 시 1단계 후 2단계로 넘어가기 전 대기 시간입니다.",
+    )
+    add_delay_input(
+        "채널 감지 대기 (ms)",
+        channel_wait_window_var,
+        "Channel 문자열 감지 간 허용 대기 시간입니다.",
     )
     status_label = tk.Label(root, textvariable=status_var, fg="#006400")
     status_label.pack(pady=(0, 4))
@@ -370,13 +380,16 @@ def build_gui() -> None:
             return
         packet_flush_job = root.after(200, flush_packet_queue)
 
+    def process_packet_detection(text: str) -> None:
+        new_channel_logged = detect_channel_names(text)
+        detect_channel_packet(text, new_channel_logged)
+
     def enqueue_packet_text(text: str) -> None:
         timestamp_sec = int(time.time())
         with packet_queue_lock:
             packet_queue.append((timestamp_sec, text))
         root.after(0, schedule_packet_flush)
-        root.after(0, detect_channel_names, text)
-        root.after(0, detect_channel_packet, text)
+        root.after(0, process_packet_detection, text)
 
     def collect_app_state() -> dict:
         coordinates: dict[str, dict[str, str]] = {}
@@ -386,6 +399,7 @@ def build_gui() -> None:
             "coordinates": coordinates,
             "click_delay_ms": click_delay_var.get(),
             "step_transition_delay_ms": step_transition_delay_var.get(),
+            "channel_wait_window_ms": channel_wait_window_var.get(),
             "packet_port": packet_port_var.get(),
             "packet_limit": packet_limit_var.get(),
             "channel_names": sorted(channel_names),
@@ -465,7 +479,7 @@ def build_gui() -> None:
         append_packet_group(timestamp, [f"[새 채널] ({name})"])
         channel_alert_var.set(f"{format_timestamp(timestamp)} 새 채널 감지: {name}")
 
-    def detect_channel_names(payload: str) -> None:
+    def detect_channel_names(payload: str) -> bool:
         new_found = False
         for candidate in extract_channel_names(payload):
             if candidate not in channel_names:
@@ -474,15 +488,122 @@ def build_gui() -> None:
                 log_new_channel(candidate)
         if new_found:
             refresh_channel_treeview()
+        return new_found
 
     def log_channel_packet(payload: str) -> None:
         timestamp = time.time()
         append_packet_group(timestamp, [f"[Channel 감지] {payload}"])
         channel_packet_alert_var.set(f"{format_timestamp(timestamp)} Channel 패킷 감지")
 
-    def detect_channel_packet(payload: str) -> None:
+    class ChannelDetectionSequence:
+        def __init__(self) -> None:
+            self.running = False
+            self.packet_queue: Queue[tuple[float, bool]] = Queue()
+
+        def start(self) -> None:
+            if self.running:
+                messagebox.showinfo("매크로", "F3 매크로가 이미 실행 중입니다.")
+                return
+            self.running = True
+            self._clear_queue()
+            threading.Thread(target=self._run_sequence, daemon=True).start()
+
+        def stop(self) -> None:
+            self.running = False
+            self._clear_queue()
+
+        def notify_channel_packet(self, new_channel_logged: bool) -> None:
+            if not self.running:
+                return
+            self.packet_queue.put((time.time(), new_channel_logged))
+
+        def _run_on_main(self, func: Callable[[], None]) -> None:
+            done = threading.Event()
+
+            def _wrapper() -> None:
+                try:
+                    func()
+                finally:
+                    done.set()
+
+            root.after(0, _wrapper)
+            done.wait()
+
+        def _set_status(self, message: str) -> None:
+            root.after(0, status_var.set, message)
+
+        def _clear_queue(self) -> None:
+            while True:
+                try:
+                    self.packet_queue.get_nowait()
+                except Empty:
+                    break
+
+        def _get_packet(self, timeout: float | None) -> tuple[float, bool] | None:
+            if not self.running:
+                return None
+
+            if timeout is None:
+                interval = 0.1
+                while self.running:
+                    try:
+                        return self.packet_queue.get(timeout=interval)
+                    except Empty:
+                        continue
+                return None
+
+            end_time = time.time() + timeout
+            while self.running and time.time() < end_time:
+                remaining = max(end_time - time.time(), 0)
+                wait_time = min(0.1, remaining)
+                try:
+                    return self.packet_queue.get(timeout=wait_time)
+                except Empty:
+                    continue
+            return None
+
+        def _run_sequence(self) -> None:
+            try:
+                while self.running:
+                    self._set_status("F3: F2 기능 실행 중…")
+                    self._run_on_main(controller.reset_and_run_first)
+
+                    self._set_status("F3: Channel 문자열을 기다리는 중…")
+                    first_packet = self._get_packet(timeout=None)
+                    if first_packet is None:
+                        break
+
+                    log_detected = first_packet[1]
+                    wait_window_sec = self._delay_seconds(get_channel_wait_window_ms())
+
+                    while self.running:
+                        next_packet = self._get_packet(timeout=wait_window_sec)
+                        if next_packet is None:
+                            break
+                        log_detected = log_detected or next_packet[1]
+
+                    if not self.running:
+                        break
+
+                    if log_detected:
+                        self._set_status("F3: 조건 충족, F1 실행 중…")
+                        self._run_on_main(controller.run_step)
+                        break
+
+                    self._set_status("F3: 새 채널 미감지, 재시도…")
+            finally:
+                self.running = False
+                self._run_on_main(controller._update_status)
+
+        def _delay_seconds(self, delay_ms: int) -> float:
+            return max(delay_ms, 0) / 1000
+
+    channel_detection_sequence = ChannelDetectionSequence()
+
+    def detect_channel_packet(payload: str, new_channel_logged: bool) -> None:
         if "Channel" in payload:
             log_channel_packet(payload)
+            channel_detection_sequence.notify_channel_packet(new_channel_logged)
 
     def delete_selected_channel() -> None:
         if channel_treeview is None:
@@ -557,6 +678,8 @@ def build_gui() -> None:
             root.after(0, controller.run_step)
         elif key == keyboard.Key.f2:
             root.after(0, controller.reset_and_run_first)
+        elif key == keyboard.Key.f3:
+            channel_detection_sequence.start()
 
     def start_hotkey_listener() -> None:
         nonlocal hotkey_listener
@@ -569,6 +692,7 @@ def build_gui() -> None:
         save_app_state(collect_app_state())
         if hotkey_listener is not None:
             hotkey_listener.stop()
+        channel_detection_sequence.stop()
         stop_packet_capture()
         root.destroy()
 
