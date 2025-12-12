@@ -134,6 +134,9 @@ def build_gui() -> None:
     packet_limit_var = tk.StringVar(value=str(saved_state.get("packet_limit", "200")))
     packet_status_var = tk.StringVar(value="패킷 캡쳐 중지됨")
     newline_var = tk.BooleanVar(value=bool(saved_state.get("newline_after_pos2", False)))
+    three_digit_channel_var = tk.BooleanVar(
+        value=bool(saved_state.get("detect_three_digit_channel", False))
+    )
     channel_names: set[str] = set(saved_state.get("channel_names", []))
 
     entries: dict[str, tuple[tk.Entry, tk.Entry]] = {}
@@ -217,6 +220,9 @@ def build_gui() -> None:
 
     top_bar = tk.Frame(root)
     top_bar.pack(fill="x", pady=(6, 0))
+    tk.Checkbutton(top_bar, text="3글자만 탐지", variable=three_digit_channel_var).pack(
+        side="right", padx=(0, 12)
+    )
     tk.Checkbutton(top_bar, text="줄바꿈", variable=newline_var).pack(side="right", padx=(0, 12))
 
     tk.Label(root, text="좌표는 화면 기준 픽셀 단위로 입력하세요 (X, Y).", fg="#444").pack(pady=(6, 0))
@@ -321,7 +327,10 @@ def build_gui() -> None:
     packet_items: deque[str] = deque()
     channel_info_window: tk.Toplevel | None = None
     channel_treeview: ttk.Treeview | None = None
-    channel_name_pattern = re.compile(r"[A-Z]-[가-힣]\d{2,3}")
+    channel_name_patterns = {
+        "flex": re.compile(r"[A-Z]-[가-힣]\d{2,3}"),
+        "strict": re.compile(r"[A-Z]-[가-힣]\d{3}"),
+    }
 
     def format_timestamp(ts: float) -> str:
         ts_int = int(ts)
@@ -415,6 +424,7 @@ def build_gui() -> None:
             "packet_port": packet_port_var.get(),
             "packet_limit": packet_limit_var.get(),
             "newline_after_pos2": newline_var.get(),
+            "detect_three_digit_channel": three_digit_channel_var.get(),
             "channel_names": sorted(channel_names),
         }
 
@@ -476,7 +486,9 @@ def build_gui() -> None:
 
     def extract_channel_names(payload: str) -> list[str]:
         normalized = payload.replace("\n", "")
-        return [match.group(0) for match in channel_name_pattern.finditer(normalized)]
+        pattern_key = "strict" if three_digit_channel_var.get() else "flex"
+        pattern = channel_name_patterns[pattern_key]
+        return [match.group(0) for match in pattern.finditer(normalized)]
 
     def refresh_channel_treeview() -> None:
         nonlocal channel_treeview
