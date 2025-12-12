@@ -76,45 +76,46 @@ class MacroController:
     def _delay_seconds(self, delay_ms: int) -> float:
         return max(delay_ms, 0) / 1000
 
-    def run_step(self, *, use_pos4_after_pos2: bool = False) -> None:
+    def run_step(self, *, newline_mode: bool = False) -> None:
         """실행 버튼 콜백: 현재 단계 수행 후 다음 단계로 이동."""
         if self.current_step == 1:
-            self._run_step_one(use_pos4_after_pos2)
+            self._run_step_one()
             self.current_step = 2
         else:
-            self._run_step_two()
+            self._run_step_two(newline_mode=newline_mode)
             self.current_step = 1
         self._update_status()
 
-    def reset_and_run_first(self, *, use_pos4_after_pos2: bool = False) -> None:
+    def reset_and_run_first(self, *, newline_mode: bool = False) -> None:
         """다시 버튼 콜백: Esc 입력 후 1단계를 재실행."""
         pyautogui.press("esc")
         self.current_step = 1
         self._update_status()
-        self._run_step_one(use_pos4_after_pos2)
+        self._run_step_one()
         self.current_step = 2
         self._update_status()
 
-    def _run_step_one(self, use_pos4_after_pos2: bool) -> None:
+    def _run_step_one(self) -> None:
         pos1 = self._get_point("pos1")
         pos2 = self._get_point("pos2")
         if pos1 is None or pos2 is None:
-            return
-        pos4 = self._get_point("pos4") if use_pos4_after_pos2 else None
-        if use_pos4_after_pos2 and pos4 is None:
             return
         self._click_point(pos1)
         click_delay_sec = self._delay_seconds(self.click_delay_provider())
         if click_delay_sec:
             time.sleep(click_delay_sec)
         self._click_point(pos2)
-        if use_pos4_after_pos2 and pos4 is not None:
-            self._click_point(pos4)
 
-    def _run_step_two(self) -> None:
+    def _run_step_two(self, *, newline_mode: bool = False) -> None:
         pos3 = self._get_point("pos3")
         if pos3 is None:
             return
+        if newline_mode:
+            pos4 = self._get_point("pos4")
+            if pos4 is None:
+                return
+            self._click_point(pos4)
+            time.sleep(self._delay_seconds(30))
         self._click_point(pos3)
         pyautogui.press("enter")
 
@@ -511,15 +512,15 @@ def build_gui() -> None:
         def __init__(self) -> None:
             self.running = False
             self.packet_queue: Queue[tuple[float, bool]] = Queue()
-            self.use_pos4_after_pos2 = False
+            self.newline_mode = False
 
-        def start(self, use_pos4_after_pos2: bool) -> None:
+        def start(self, newline_mode: bool) -> None:
             if self.running:
                 messagebox.showinfo("매크로", "F3 매크로가 이미 실행 중입니다.")
                 return
             self.running = True
             self._clear_queue()
-            self.use_pos4_after_pos2 = use_pos4_after_pos2
+            self.newline_mode = newline_mode
             threading.Thread(target=self._run_sequence, daemon=True).start()
 
         def stop(self) -> None:
@@ -582,7 +583,7 @@ def build_gui() -> None:
                     self._set_status("F3: F2 기능 실행 중…")
                     self._run_on_main(
                         lambda: controller.reset_and_run_first(
-                            use_pos4_after_pos2=self.use_pos4_after_pos2
+                            newline_mode=self.newline_mode
                         )
                     )
 
@@ -625,7 +626,7 @@ def build_gui() -> None:
                     if should_run_macro and log_detected:
                         self._set_status("F3: 조건 충족, F1 실행 중…")
                         self._run_on_main(
-                            lambda: controller.run_step(use_pos4_after_pos2=self.use_pos4_after_pos2)
+                            lambda: controller.run_step(newline_mode=self.newline_mode)
                         )
                         break
 
