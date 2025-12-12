@@ -8,7 +8,7 @@ import time
 import tkinter as tk
 from tkinter import messagebox, ttk
 
-from packet import PacketCaptureManager
+from makr.packet import PacketCaptureManager
 
 import pyautogui
 from pynput import keyboard, mouse
