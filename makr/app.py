@@ -4,8 +4,10 @@ macOS에서 최상단에 고정된 창을 제공하며, 실행/다시 버튼으�
 순차 동작을 제어합니다.
 """
 
+import threading
 import time
 import tkinter as tk
+from collections import deque
 from tkinter import messagebox, ttk
 
 from makr.packet import PacketCaptureManager
@@ -89,10 +91,13 @@ def build_gui() -> None:
     alert_keywords: list[str] = []
 
     entries: dict[str, tuple[tk.Entry, tk.Entry]] = {}
+    packet_queue: deque[str] = deque()
+    packet_queue_lock = threading.Lock()
+    packet_flush_job: str | None = None
     capture_listener: mouse.Listener | None = None
     hotkey_listener: keyboard.Listener | None = None
     packet_manager = PacketCaptureManager(
-        on_packet=lambda text: root.after(0, append_packet_text, text),
+        on_packet=lambda text: enqueue_packet_text(text),
         on_alert=lambda keyword, payload: root.after(0, log_packet_alert, keyword, payload),
         on_error=lambda msg: root.after(0, messagebox.showerror, "패킷 캡쳐 오류", msg),
     )
@@ -214,8 +219,40 @@ def build_gui() -> None:
     def append_packet_text(text: str) -> None:
         packet_text.configure(state="normal")
         packet_text.insert(tk.END, text if text.endswith("\n") else text + "\n")
+        _trim_packet_text()
         packet_text.see(tk.END)
         packet_text.configure(state="disabled")
+
+    def _trim_packet_text(max_lines: int = 500) -> None:
+        line_count = int(packet_text.index("end-1c").split(".")[0])
+        if line_count <= max_lines:
+            return
+        start_index = f"{line_count - max_lines}.0"
+        packet_text.delete("1.0", start_index)
+
+    def flush_packet_queue() -> None:
+        nonlocal packet_flush_job
+        with packet_queue_lock:
+            if not packet_queue:
+                packet_flush_job = None
+                return
+            batch = "".join(
+                entry if entry.endswith("\n") else entry + "\n" for entry in packet_queue
+            )
+            packet_queue.clear()
+            packet_flush_job = None
+        append_packet_text(batch)
+
+    def schedule_packet_flush() -> None:
+        nonlocal packet_flush_job
+        if packet_flush_job is not None:
+            return
+        packet_flush_job = root.after(200, flush_packet_queue)
+
+    def enqueue_packet_text(text: str) -> None:
+        with packet_queue_lock:
+            packet_queue.append(text)
+        root.after(0, schedule_packet_flush)
 
     def log_packet_alert(keyword: str, payload: str) -> None:
         append_packet_text(f"[알림] '{keyword}' 포함 패킷 감지: {payload}\n")
