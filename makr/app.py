@@ -5,6 +5,7 @@ macOS에서 최상단에 고정된 창을 제공하며, 실행/다시 버튼으�
 """
 
 import json
+import re
 import threading
 import time
 import tkinter as tk
@@ -125,8 +126,10 @@ def build_gui() -> None:
     channel_detection_delay_var = tk.StringVar(
         value=str(saved_state.get("channel_detection_delay_ms", "0"))
     )
+    packet_limit_var = tk.StringVar(value=str(saved_state.get("packet_limit", "200")))
     packet_status_var = tk.StringVar(value="패킷 캡쳐 중지됨")
     alert_keywords: list[str] = list(saved_state.get("alert_keywords", []))
+    channel_names: set[str] = set(saved_state.get("channel_names", []))
 
     entries: dict[str, tuple[tk.Entry, tk.Entry]] = {}
     packet_queue: deque[str] = deque()
@@ -261,7 +264,7 @@ def build_gui() -> None:
     packet_frame = ttk.LabelFrame(root, text="패킷 캡쳐")
     packet_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
     packet_frame.columnconfigure(0, weight=1)
-    packet_frame.rowconfigure(3, weight=1)
+    packet_frame.rowconfigure(4, weight=1)
 
     packet_status_label = ttk.Label(packet_frame, textvariable=packet_status_var, foreground="#0a5")
     packet_status_label.grid(row=0, column=0, columnspan=3, sticky="w", padx=8, pady=(8, 4))
@@ -278,8 +281,17 @@ def build_gui() -> None:
     start_capture_btn.grid(row=0, column=0, padx=2)
     stop_capture_btn.grid(row=0, column=1, padx=2)
 
+    retention_frame = ttk.Frame(packet_frame)
+    retention_frame.grid(row=2, column=0, columnspan=2, sticky="w", padx=8, pady=(6, 0))
+    ttk.Label(retention_frame, text="보관 패킷 수").pack(side="left")
+    packet_limit_entry = ttk.Entry(retention_frame, textvariable=packet_limit_var, width=8)
+    packet_limit_entry.pack(side="left", padx=(4, 10))
+
+    channel_info_btn = ttk.Button(retention_frame, text="채널정보")
+    channel_info_btn.pack(side="left")
+
     alert_frame = ttk.LabelFrame(packet_frame, text="패킷 알림")
-    alert_frame.grid(row=2, column=0, columnspan=3, sticky="nsew", padx=8, pady=(6, 0))
+    alert_frame.grid(row=3, column=0, columnspan=3, sticky="nsew", padx=8, pady=(6, 0))
     alert_frame.columnconfigure(0, weight=1)
     alert_frame.rowconfigure(1, weight=1)
 
@@ -292,13 +304,15 @@ def build_gui() -> None:
     alert_scroll.grid(row=1, column=1, sticky="ns")
 
     packet_tree = ttk.Treeview(packet_frame, columns=("payload",), show="tree", height=10)
-    packet_tree.grid(row=3, column=0, columnspan=3, sticky="nsew", padx=8, pady=8)
+    packet_tree.grid(row=4, column=0, columnspan=3, sticky="nsew", padx=8, pady=8)
     packet_tree_scroll = ttk.Scrollbar(packet_frame, orient="vertical", command=packet_tree.yview)
     packet_tree.configure(yscrollcommand=packet_tree_scroll.set)
-    packet_tree_scroll.grid(row=3, column=3, sticky="ns", pady=8)
+    packet_tree_scroll.grid(row=4, column=3, sticky="ns", pady=8)
 
     packet_counter = 0
     packet_items: deque[str] = deque()
+    channel_info_window: tk.Toplevel | None = None
+    channel_treeview: ttk.Treeview | None = None
 
     def append_packet_payload(payload: str, *, summary: str | None = None) -> None:
         nonlocal packet_counter
@@ -316,7 +330,20 @@ def build_gui() -> None:
         _trim_packet_items()
         packet_tree.see(parent_id)
 
-    def _trim_packet_items(max_packets: int = 200) -> None:
+    def get_packet_limit() -> int:
+        try:
+            limit = int(float(packet_limit_var.get()))
+        except (tk.TclError, ValueError):
+            messagebox.showerror("보관 패킷 수", "보관할 패킷 수를 숫자로 입력하세요.")
+            limit = 200
+        if limit < 1:
+            messagebox.showerror("보관 패킷 수", "최소 1개 이상 보관해야 합니다.")
+            limit = 1
+        packet_limit_var.set(str(limit))
+        return limit
+
+    def _trim_packet_items() -> None:
+        max_packets = get_packet_limit()
         while len(packet_items) > max_packets:
             oldest_id = packet_items.popleft()
             packet_tree.delete(oldest_id)
@@ -344,6 +371,7 @@ def build_gui() -> None:
             packet_queue.append(text)
         root.after(0, schedule_packet_flush)
         root.after(0, handle_channel_detection, text)
+        root.after(0, extract_and_store_channel_names, text)
 
     def log_packet_alert(keyword: str, payload: str) -> None:
         append_packet_payload(payload, summary=f"[알림] '{keyword}' 포함 패킷")
@@ -385,6 +413,8 @@ def build_gui() -> None:
             "channel_detection_delay_ms": channel_detection_delay_var.get(),
             "packet_port": packet_port_var.get(),
             "alert_keywords": alert_keywords,
+            "packet_limit": packet_limit_var.get(),
+            "channel_names": sorted(channel_names),
         }
 
     def get_port_value() -> int | None:
@@ -451,6 +481,7 @@ def build_gui() -> None:
 
     start_capture_btn.configure(command=start_packet_capture)
     stop_capture_btn.configure(command=stop_packet_capture)
+    channel_info_btn.configure(command=lambda: show_channel_info_window())
 
     def run_channel_cycle_once() -> None:
         nonlocal channel_waiting_for_packet
@@ -478,6 +509,76 @@ def build_gui() -> None:
                 root.after(0, run_channel_cycle_once)
 
         root.after(channel_delay_ms, _run_step_after_delay)
+
+    channel_pattern = re.compile(r"[A-Z]-[가-힣]\d{2,3}")
+
+    def extract_channel_candidates(payload: str) -> list[str]:
+        candidates: list[str] = []
+        search_start = 0
+        while True:
+            channel_pos = payload.find("Channel", search_start)
+            if channel_pos == -1:
+                break
+            substring = payload[channel_pos + len("Channel") :]
+            match = channel_pattern.search(substring)
+            if match:
+                candidates.append(match.group(0))
+                search_start = channel_pos + len("Channel") + match.end()
+            else:
+                search_start = channel_pos + len("Channel")
+        return candidates
+
+    def refresh_channel_treeview() -> None:
+        nonlocal channel_treeview
+        if channel_treeview is None:
+            return
+        for item in channel_treeview.get_children():
+            channel_treeview.delete(item)
+        for idx, name in enumerate(sorted(channel_names), start=1):
+            channel_treeview.insert("", "end", text=f"{idx}. {name}")
+
+    def log_new_channel(name: str) -> None:
+        append_packet_payload(f"채널명: {name}", summary=f"[채널] 새 채널 감지: {name}")
+        status_var.set("새 채널 감지")
+
+    def extract_and_store_channel_names(payload: str) -> None:
+        new_found = False
+        for candidate in extract_channel_candidates(payload):
+            if candidate not in channel_names:
+                channel_names.add(candidate)
+                new_found = True
+                log_new_channel(candidate)
+        if new_found:
+            refresh_channel_treeview()
+
+    def show_channel_info_window() -> None:
+        nonlocal channel_info_window, channel_treeview
+        if channel_info_window is not None and tk.Toplevel.winfo_exists(channel_info_window):
+            channel_info_window.lift()
+            refresh_channel_treeview()
+            return
+        channel_info_window = tk.Toplevel(root)
+        channel_info_window.title("채널 정보")
+        channel_info_window.geometry("300x300")
+        channel_info_window.resizable(False, True)
+
+        tree = ttk.Treeview(channel_info_window, columns=("name",), show="tree")
+        tree.pack(fill="both", expand=True, padx=8, pady=8)
+        tree_scroll = ttk.Scrollbar(channel_info_window, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=tree_scroll.set)
+        tree_scroll.pack(side="right", fill="y", padx=(0, 8))
+
+        channel_treeview = tree
+        refresh_channel_treeview()
+
+        def on_close_channel_window() -> None:
+            nonlocal channel_info_window, channel_treeview
+            channel_info_window = None
+            channel_treeview = None
+            tree_scroll.destroy()
+            tree.destroy()
+
+        channel_info_window.protocol("WM_DELETE_WINDOW", on_close_channel_window)
 
     def stop_channel_cycle() -> None:
         nonlocal channel_cycle_running, channel_waiting_for_packet
