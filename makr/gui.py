@@ -84,6 +84,7 @@ class MacroEditorApp(tk.Tk):
         right_frame.grid(row=0, column=1, sticky="nsew")
         right_frame.columnconfigure(0, weight=1)
         right_frame.rowconfigure(1, weight=1)
+        right_frame.rowconfigure(2, weight=1)
 
         detail_group = ttk.LabelFrame(right_frame, text="세부 정보")
         detail_group.grid(row=0, column=0, sticky="nsew")
@@ -106,8 +107,18 @@ class MacroEditorApp(tk.Tk):
         self.log_text.configure(yscrollcommand=log_scroll.set)
         log_scroll.grid(row=0, column=1, sticky="ns", pady=8)
 
+        packet_group = ttk.LabelFrame(right_frame, text="감지된 패킷 내용")
+        packet_group.grid(row=2, column=0, sticky="nsew", pady=(10, 0))
+        packet_group.columnconfigure(0, weight=1)
+        packet_group.rowconfigure(0, weight=1)
+        self.packet_text_display = tk.Text(packet_group, wrap="word", height=6, state="disabled")
+        self.packet_text_display.grid(row=0, column=0, sticky="nsew", padx=8, pady=8)
+        packet_scroll = ttk.Scrollbar(packet_group, orient="vertical", command=self.packet_text_display.yview)
+        self.packet_text_display.configure(yscrollcommand=packet_scroll.set)
+        packet_scroll.grid(row=0, column=1, sticky="ns", pady=8)
+
         control_frame = ttk.Frame(right_frame)
-        control_frame.grid(row=2, column=0, sticky="ew", pady=(10, 0))
+        control_frame.grid(row=3, column=0, sticky="ew", pady=(10, 0))
         control_frame.columnconfigure(0, weight=1)
         control_frame.columnconfigure(1, weight=1)
         control_frame.columnconfigure(2, weight=1)
@@ -395,12 +406,34 @@ class MacroEditorApp(tk.Tk):
         self.log_text.delete("1.0", "end")
         self.log_text.configure(state="disabled")
         self._log_index = 0
+        self._clear_packet_view()
 
     def _append_log(self, line: str) -> None:
         self.log_text.configure(state="normal")
         self.log_text.insert("end", line + "\n")
         self.log_text.see("end")
         self.log_text.configure(state="disabled")
+        self._maybe_update_packet_view(line)
+
+    def _clear_packet_view(self) -> None:
+        if not hasattr(self, "packet_text_display"):
+            return
+        self.packet_text_display.configure(state="normal")
+        self.packet_text_display.delete("1.0", "end")
+        self.packet_text_display.configure(state="disabled")
+
+    def _maybe_update_packet_view(self, line: str) -> None:
+        if "수신 내용:" not in line:
+            return
+        marker = "수신 내용:"
+        marker_index = line.find(marker)
+        if marker_index == -1:
+            return
+        content = line[marker_index + len(marker) :].strip()
+        self.packet_text_display.configure(state="normal")
+        self.packet_text_display.insert("end", content + "\n")
+        self.packet_text_display.see("end")
+        self.packet_text_display.configure(state="disabled")
 
     def _start_execution(self) -> None:
         if self._execution_thread and self._execution_thread.is_alive():
