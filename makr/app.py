@@ -584,6 +584,26 @@ def build_gui() -> None:
         if new_found:
             refresh_channel_treeview()
 
+    def delete_selected_channel() -> None:
+        if channel_treeview is None:
+            return
+        selected_items = channel_treeview.selection()
+        if not selected_items:
+            messagebox.showinfo("채널 삭제", "삭제할 채널을 선택하세요.")
+            return
+
+        removed = False
+        for item_id in selected_items:
+            text = channel_treeview.item(item_id, "text")
+            _, _, channel_name = text.partition(". ")
+            target = channel_name or text
+            if target in channel_names:
+                channel_names.remove(target)
+                removed = True
+
+        if removed:
+            refresh_channel_treeview()
+
     def show_channel_info_window() -> None:
         nonlocal channel_info_window, channel_treeview
         if channel_info_window is not None and tk.Toplevel.winfo_exists(channel_info_window):
@@ -600,6 +620,10 @@ def build_gui() -> None:
         tree_scroll = ttk.Scrollbar(channel_info_window, orient="vertical", command=tree.yview)
         tree.configure(yscrollcommand=tree_scroll.set)
         tree_scroll.pack(side="right", fill="y", padx=(0, 8))
+
+        button_bar = ttk.Frame(channel_info_window)
+        button_bar.pack(fill="x", padx=8, pady=(0, 8))
+        ttk.Button(button_bar, text="선택 삭제", command=delete_selected_channel).pack(side="right")
 
         channel_treeview = tree
         refresh_channel_treeview()
