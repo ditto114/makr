@@ -604,6 +604,17 @@ def build_gui() -> None:
         if removed:
             refresh_channel_treeview()
 
+    def clear_all_channels() -> None:
+        if not channel_names:
+            messagebox.showinfo("채널 초기화", "삭제할 채널 정보가 없습니다.")
+            return
+        if not messagebox.askyesno("채널 초기화", "모든 채널 정보를 삭제할까요?"):
+            return
+
+        channel_names.clear()
+        refresh_channel_treeview()
+        status_var.set("채널 정보가 초기화되었습니다.")
+
     def show_channel_info_window() -> None:
         nonlocal channel_info_window, channel_treeview
         if channel_info_window is not None and tk.Toplevel.winfo_exists(channel_info_window):
@@ -623,6 +634,7 @@ def build_gui() -> None:
 
         button_bar = ttk.Frame(channel_info_window)
         button_bar.pack(fill="x", padx=8, pady=(0, 8))
+        ttk.Button(button_bar, text="초기화", command=clear_all_channels).pack(side="left")
         ttk.Button(button_bar, text="선택 삭제", command=delete_selected_channel).pack(side="right")
 
         channel_treeview = tree
