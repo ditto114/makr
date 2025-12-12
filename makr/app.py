@@ -286,11 +286,13 @@ def build_gui() -> None:
     channel_treeview: ttk.Treeview | None = None
     channel_name_pattern = re.compile(r"[A-Z]-[가-힣]\d{2,3}")
 
-    def format_timestamp(ts_sec: int) -> str:
-        return time.strftime('%H:%M:%S', time.localtime(ts_sec))
+    def format_timestamp(ts: float) -> str:
+        ts_int = int(ts)
+        millis = int((ts - ts_int) * 1000)
+        return time.strftime('%H:%M:%S', time.localtime(ts)) + f".{millis:03d}"
 
     def append_packet_group(
-        timestamp_sec: int, payloads: list[str], *, label_prefix: str | None = None
+        timestamp_sec: float, payloads: list[str], *, label_prefix: str | None = None
     ) -> None:
         nonlocal packet_counter
 
@@ -340,7 +342,7 @@ def build_gui() -> None:
             packet_queue.clear()
             packet_flush_job = None
 
-        grouped_payloads: dict[int, list[str]] = {}
+        grouped_payloads: dict[float, list[str]] = {}
         for timestamp_sec, payload in batch:
             grouped_payloads.setdefault(timestamp_sec, []).append(payload)
 
@@ -359,6 +361,7 @@ def build_gui() -> None:
             packet_queue.append((timestamp_sec, text))
         root.after(0, schedule_packet_flush)
         root.after(0, detect_channel_names, text)
+        root.after(0, detect_channel_packet, text)
 
     def collect_app_state() -> dict:
         coordinates: dict[str, dict[str, str]] = {}
@@ -443,8 +446,9 @@ def build_gui() -> None:
             channel_treeview.insert("", "end", text=f"{idx}. {name}")
 
     def log_new_channel(name: str) -> None:
-        append_packet_group(int(time.time()), [f"[새 채널] ({name})"])
-        status_var.set(f"새 채널 감지: {name}")
+        timestamp = time.time()
+        append_packet_group(timestamp, [f"[새 채널] ({name})"])
+        status_var.set(f"{format_timestamp(timestamp)} 새 채널 감지: {name}")
 
     def detect_channel_names(payload: str) -> None:
         new_found = False
@@ -455,6 +459,15 @@ def build_gui() -> None:
                 log_new_channel(candidate)
         if new_found:
             refresh_channel_treeview()
+
+    def log_channel_packet(payload: str) -> None:
+        timestamp = time.time()
+        append_packet_group(timestamp, [f"[Channel 감지] {payload}"])
+        status_var.set(f"{format_timestamp(timestamp)} Channel 패킷 감지")
+
+    def detect_channel_packet(payload: str) -> None:
+        if "Channel" in payload:
+            log_channel_packet(payload)
 
     def delete_selected_channel() -> None:
         if channel_treeview is None:
