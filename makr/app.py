@@ -322,10 +322,28 @@ def build_gui() -> None:
         stop_capture_btn.configure(state="normal")
 
     def stop_packet_capture() -> None:
-        packet_manager.stop()
-        packet_status_var.set("패킷 캡쳐 중지됨")
-        start_capture_btn.configure(state="normal")
+        if not packet_manager.running:
+            packet_status_var.set("패킷 캡쳐 중지됨")
+            start_capture_btn.configure(state="normal")
+            stop_capture_btn.configure(state="disabled")
+            return
+
+        packet_status_var.set("패킷 캡쳐 중지 중…")
+        start_capture_btn.configure(state="disabled")
         stop_capture_btn.configure(state="disabled")
+
+        def _stop_capture_in_thread() -> None:
+            try:
+                packet_manager.stop()
+            finally:
+                root.after(0, _finalize_stop_capture)
+
+        def _finalize_stop_capture() -> None:
+            packet_status_var.set("패킷 캡쳐 중지됨")
+            start_capture_btn.configure(state="normal")
+            stop_capture_btn.configure(state="disabled")
+
+        threading.Thread(target=_stop_capture_in_thread, daemon=True).start()
 
     ttk.Button(alert_frame, text="문자열 등록", command=add_alert_keyword).grid(
         row=0, column=1, sticky="ew", pady=6
