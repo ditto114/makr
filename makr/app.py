@@ -137,6 +137,8 @@ def build_gui() -> None:
     packet_flush_job: str | None = None
     channel_cycle_running = False
     channel_waiting_for_packet = False
+    channel_alert_cycle_running = False
+    channel_alert_waiting_for_packet = False
     capture_listener: mouse.Listener | None = None
     hotkey_listener: keyboard.Listener | None = None
     packet_manager = PacketCaptureManager(
@@ -371,6 +373,7 @@ def build_gui() -> None:
             packet_queue.append(text)
         root.after(0, schedule_packet_flush)
         root.after(0, handle_channel_detection, text)
+        root.after(0, handle_channel_alert_detection, text)
         root.after(0, extract_and_store_channel_names, text)
 
     def log_packet_alert(keyword: str, payload: str) -> None:
@@ -601,6 +604,55 @@ def build_gui() -> None:
         else:
             start_channel_cycle()
 
+    def stop_channel_alert_cycle() -> None:
+        nonlocal channel_alert_cycle_running, channel_alert_waiting_for_packet
+        channel_alert_cycle_running = False
+        channel_alert_waiting_for_packet = False
+        status_var.set("F4 매크로를 종료했습니다.")
+
+    def run_channel_alert_cycle_once() -> None:
+        nonlocal channel_alert_waiting_for_packet
+        if not channel_alert_cycle_running:
+            return
+        controller.reset_and_run_first()
+        channel_alert_waiting_for_packet = True
+        status_var.set("'Channel' 및 '새 채널 대기 알림' 감지를 기다리는 중입니다.")
+
+    def start_channel_alert_cycle() -> None:
+        nonlocal channel_alert_cycle_running
+        if channel_alert_cycle_running:
+            stop_channel_alert_cycle()
+        channel_alert_cycle_running = True
+        status_var.set("F2 실행 후 감지를 시작합니다.")
+        run_channel_alert_cycle_once()
+
+    def handle_channel_alert_detection(payload: str) -> None:
+        nonlocal channel_alert_waiting_for_packet
+        if not (channel_alert_cycle_running and channel_alert_waiting_for_packet):
+            return
+        if "Channel" not in payload:
+            return
+
+        has_wait_alert = "새 채널 대기 알림" in payload
+        channel_alert_waiting_for_packet = False
+
+        if not has_wait_alert:
+            status_var.set("'Channel' 감지됨. F2부터 다시 반복합니다.")
+            root.after(0, run_channel_alert_cycle_once)
+            return
+
+        status_var.set("'Channel'과 '새 채널 대기 알림' 감지됨. F1 실행을 준비합니다.")
+        channel_delay_ms = get_channel_detection_delay_ms()
+
+        def _execute_after_delay() -> None:
+            if not channel_alert_cycle_running:
+                return
+            controller.run_step()
+            stop_channel_alert_cycle()
+            status_var.set("F4 매크로를 완료했습니다.")
+
+        root.after(channel_delay_ms, _execute_after_delay)
+
     def on_hotkey_press(key: keyboard.Key) -> None:
         if key == keyboard.Key.f1:
             root.after(0, controller.run_step)
@@ -608,6 +660,8 @@ def build_gui() -> None:
             root.after(0, controller.reset_and_run_first)
         elif key == keyboard.Key.f3:
             root.after(0, toggle_channel_cycle)
+        elif key == keyboard.Key.f4:
+            root.after(0, start_channel_alert_cycle)
 
     def start_hotkey_listener() -> None:
         nonlocal hotkey_listener
@@ -622,6 +676,7 @@ def build_gui() -> None:
             hotkey_listener.stop()
         stop_packet_capture()
         stop_channel_cycle()
+        stop_channel_alert_cycle()
         root.destroy()
 
     start_hotkey_listener()
