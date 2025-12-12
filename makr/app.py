@@ -210,25 +210,35 @@ def build_gui() -> None:
     alert_listbox.configure(yscrollcommand=alert_scroll.set)
     alert_scroll.grid(row=1, column=1, sticky="ns")
 
-    packet_text = tk.Text(packet_frame, wrap="word", height=8, state="disabled")
-    packet_text.grid(row=3, column=0, columnspan=3, sticky="nsew", padx=8, pady=8)
-    packet_text_scroll = ttk.Scrollbar(packet_frame, orient="vertical", command=packet_text.yview)
-    packet_text.configure(yscrollcommand=packet_text_scroll.set)
-    packet_text_scroll.grid(row=3, column=3, sticky="ns", pady=8)
+    packet_tree = ttk.Treeview(packet_frame, columns=("payload",), show="tree", height=10)
+    packet_tree.grid(row=3, column=0, columnspan=3, sticky="nsew", padx=8, pady=8)
+    packet_tree_scroll = ttk.Scrollbar(packet_frame, orient="vertical", command=packet_tree.yview)
+    packet_tree.configure(yscrollcommand=packet_tree_scroll.set)
+    packet_tree_scroll.grid(row=3, column=3, sticky="ns", pady=8)
 
-    def append_packet_text(text: str) -> None:
-        packet_text.configure(state="normal")
-        packet_text.insert(tk.END, text if text.endswith("\n") else text + "\n")
-        _trim_packet_text()
-        packet_text.see(tk.END)
-        packet_text.configure(state="disabled")
+    packet_counter = 0
+    packet_items: deque[str] = deque()
 
-    def _trim_packet_text(max_lines: int = 500) -> None:
-        line_count = int(packet_text.index("end-1c").split(".")[0])
-        if line_count <= max_lines:
-            return
-        start_index = f"{line_count - max_lines}.0"
-        packet_text.delete("1.0", start_index)
+    def append_packet_payload(payload: str, *, summary: str | None = None) -> None:
+        nonlocal packet_counter
+
+        def _summary_text(text: str) -> str:
+            first_line = text.splitlines()[0] if text.strip() else "(내용 없음)"
+            return (first_line[:80] + "…") if len(first_line) > 80 else first_line
+
+        packet_counter += 1
+        parent_text = f"{packet_counter}. {summary or _summary_text(payload)}"
+        parent_id = packet_tree.insert("", "end", text=parent_text, open=False)
+        for line in payload.splitlines():
+            packet_tree.insert(parent_id, "end", text=line if line else "(빈 줄)")
+        packet_items.append(parent_id)
+        _trim_packet_items()
+        packet_tree.see(parent_id)
+
+    def _trim_packet_items(max_packets: int = 200) -> None:
+        while len(packet_items) > max_packets:
+            oldest_id = packet_items.popleft()
+            packet_tree.delete(oldest_id)
 
     def flush_packet_queue() -> None:
         nonlocal packet_flush_job
@@ -236,12 +246,11 @@ def build_gui() -> None:
             if not packet_queue:
                 packet_flush_job = None
                 return
-            batch = "".join(
-                entry if entry.endswith("\n") else entry + "\n" for entry in packet_queue
-            )
+            batch = list(packet_queue)
             packet_queue.clear()
             packet_flush_job = None
-        append_packet_text(batch)
+        for payload in batch:
+            append_packet_payload(payload)
 
     def schedule_packet_flush() -> None:
         nonlocal packet_flush_job
@@ -255,7 +264,7 @@ def build_gui() -> None:
         root.after(0, schedule_packet_flush)
 
     def log_packet_alert(keyword: str, payload: str) -> None:
-        append_packet_text(f"[알림] '{keyword}' 포함 패킷 감지: {payload}\n")
+        append_packet_payload(payload, summary=f"[알림] '{keyword}' 포함 패킷")
         print(f"[패킷 알림] '{keyword}' 문자열이 포함된 패킷이 감지되었습니다.")
 
     def refresh_alerts() -> None:
