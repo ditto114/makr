@@ -122,6 +122,9 @@ def build_gui() -> None:
     status_var = tk.StringVar()
     click_delay_var = tk.StringVar(value=str(saved_state.get("click_delay_ms", "100")))
     step_transition_delay_var = tk.StringVar(value=str(saved_state.get("step_transition_delay_ms", "200")))
+    channel_detection_delay_var = tk.StringVar(
+        value=str(saved_state.get("channel_detection_delay_ms", "0"))
+    )
     packet_status_var = tk.StringVar(value="패킷 캡쳐 중지됨")
     alert_keywords: list[str] = list(saved_state.get("alert_keywords", []))
 
@@ -156,6 +159,9 @@ def build_gui() -> None:
 
     def get_step_transition_delay_ms() -> int:
         return _parse_delay_ms(step_transition_delay_var, "1→2단계 전환 딜레이", 200)
+
+    def get_channel_detection_delay_ms() -> int:
+        return _parse_delay_ms(channel_detection_delay_var, "Channel 감지 후 실행 딜레이", 0)
 
     def add_coordinate_row(label_text: str, key: str) -> None:
         frame = tk.Frame(root)
@@ -242,6 +248,11 @@ def build_gui() -> None:
         "1→2단계 전환 (ms)",
         step_transition_delay_var,
         "반복 실행 시 1단계 후 2단계로 넘어가기 전 대기 시간입니다.",
+    )
+    add_delay_input(
+        "Channel 감지 후 실행 (ms)",
+        channel_detection_delay_var,
+        "'Channel' 문자열 감지 후 F1 단계 실행까지 대기 시간입니다.",
     )
 
     status_label = tk.Label(root, textvariable=status_var, fg="#006400")
@@ -371,6 +382,7 @@ def build_gui() -> None:
             "coordinates": coordinates,
             "click_delay_ms": click_delay_var.get(),
             "step_transition_delay_ms": step_transition_delay_var.get(),
+            "channel_detection_delay_ms": channel_detection_delay_var.get(),
             "packet_port": packet_port_var.get(),
             "alert_keywords": alert_keywords,
         }
@@ -456,9 +468,16 @@ def build_gui() -> None:
             return
         channel_waiting_for_packet = False
         status_var.set("'Channel' 패킷 감지! 2단계를 실행합니다.")
-        controller.run_step()
-        if channel_cycle_running:
-            root.after(0, run_channel_cycle_once)
+        channel_delay_ms = get_channel_detection_delay_ms()
+
+        def _run_step_after_delay() -> None:
+            if not channel_cycle_running:
+                return
+            controller.run_step()
+            if channel_cycle_running:
+                root.after(0, run_channel_cycle_once)
+
+        root.after(channel_delay_ms, _run_step_after_delay)
 
     def stop_channel_cycle() -> None:
         nonlocal channel_cycle_running, channel_waiting_for_packet
