@@ -118,6 +118,27 @@ def build_gui() -> None:
         on_error=lambda msg: root.after(0, messagebox.showerror, "패킷 캡쳐 오류", msg),
     )
 
+    def _parse_delay_ms(var: tk.StringVar, label: str, fallback: int) -> int:
+        try:
+            delay_ms = int(float(var.get()))
+        except (tk.TclError, ValueError):
+            messagebox.showerror(f"{label} 오류", f"{label}를 숫자로 입력하세요.")
+            delay_ms = fallback
+        if delay_ms < 0:
+            messagebox.showerror(f"{label} 오류", f"{label}는 0 이상이어야 합니다.")
+            delay_ms = 0
+        var.set(str(delay_ms))
+        return delay_ms
+
+    def get_repeat_delay_ms() -> int:
+        return _parse_delay_ms(repeat_delay_var, "반복 딜레이", 750)
+
+    def get_click_delay_ms() -> int:
+        return _parse_delay_ms(click_delay_var, "1단계 클릭 딜레이", 100)
+
+    def get_step_transition_delay_ms() -> int:
+        return _parse_delay_ms(step_transition_delay_var, "1→2단계 전환 딜레이", 200)
+
     def add_coordinate_row(label_text: str, key: str) -> None:
         frame = tk.Frame(root)
         frame.pack(fill="x", padx=10, pady=5)
@@ -394,27 +415,6 @@ def build_gui() -> None:
             root.after(0, controller.reset_and_run_first)
         elif key == keyboard.Key.f3:
             root.after(0, toggle_repeat)
-
-    def _parse_delay_ms(var: tk.StringVar, label: str, fallback: int) -> int:
-        try:
-            delay_ms = int(float(var.get()))
-        except (tk.TclError, ValueError):
-            messagebox.showerror(f"{label} 오류", f"{label}를 숫자로 입력하세요.")
-            delay_ms = fallback
-        if delay_ms < 0:
-            messagebox.showerror(f"{label} 오류", f"{label}는 0 이상이어야 합니다.")
-            delay_ms = 0
-        var.set(str(delay_ms))
-        return delay_ms
-
-    def get_repeat_delay_ms() -> int:
-        return _parse_delay_ms(repeat_delay_var, "반복 딜레이", 750)
-
-    def get_click_delay_ms() -> int:
-        return _parse_delay_ms(click_delay_var, "1단계 클릭 딜레이", 100)
-
-    def get_step_transition_delay_ms() -> int:
-        return _parse_delay_ms(step_transition_delay_var, "1→2단계 전환 딜레이", 200)
 
     def schedule_next_repeat() -> None:
         nonlocal repeat_job_id
