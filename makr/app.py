@@ -650,7 +650,13 @@ def build_gui() -> None:
         except ValueError as exc:
             messagebox.showerror("포트 오류", str(exc))
             return
-        packet_manager.start()
+        started = packet_manager.start()
+        if not started:
+            packet_status_var.set("패킷 캡쳐 시작 실패")
+            start_capture_btn.configure(state="normal")
+            stop_capture_btn.configure(state="disabled")
+            return
+
         packet_status_var.set(f"포트 {port_value} 캡쳐 중...")
         start_capture_btn.configure(state="disabled")
         stop_capture_btn.configure(state="normal")

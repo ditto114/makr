@@ -38,14 +38,14 @@ class PacketCaptureManager:
             raise ValueError("포트 번호는 1~65535 사이의 정수여야 합니다.")
         self._port = port
 
-    def start(self) -> None:
+    def start(self) -> bool:
         if self.running:
-            return
+            return True
         try:
             from scapy.all import AsyncSniffer, Raw
         except Exception:  # pragma: no cover - scapy 미설치 환경
             self._on_error("scapy가 설치되어 있지 않아 패킷 캡쳐를 시작할 수 없습니다.")
-            return
+            return False
 
         def handle_packet(packet) -> None:  # type: ignore[no-untyped-def]
             if not packet.haslayer(Raw):
@@ -60,15 +60,23 @@ class PacketCaptureManager:
             self._on_packet(decoded)
 
         try:
-            self._sniffer = AsyncSniffer(
+            sniffer = AsyncSniffer(
                 filter=f"port {self._port}",
                 prn=handle_packet,
                 store=False,
             )
-            self._sniffer.start()
+            sniffer.start()
         except Exception as exc:  # pragma: no cover - scapy 내부 오류
-            self._sniffer = None
             self._on_error(f"패킷 캡쳐를 시작하지 못했습니다: {exc}")
+            return False
+
+        self._sniffer = sniffer
+        if not self.running:
+            self._sniffer = None
+            self._on_error("패킷 캡쳐를 시작하지 못했습니다: 스니퍼가 활성화되지 않았습니다.")
+            return False
+
+        return True
 
     def stop(self) -> None:
         if not self.running:
