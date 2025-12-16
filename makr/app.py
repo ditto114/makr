@@ -560,6 +560,7 @@ def build_gui() -> None:
             search_from = 0
             base_len = len(base)
             anchor_sequence = [f"{i}PopWorldId" for i in range(0, 10)]
+            anchor_len = len(anchor_sequence[0])
 
             while True:
                 start_idx = base.find(anchor_sequence[0], search_from)
@@ -567,7 +568,7 @@ def build_gui() -> None:
                     break
 
                 positions = [start_idx]
-                prev_end = start_idx + len(anchor_sequence[0])
+                prev_end = start_idx + anchor_len
                 success = True
 
                 for seq in anchor_sequence[1:]:
@@ -599,10 +600,7 @@ def build_gui() -> None:
                         if most_common_count < 7:
                             digits_to_remove.extend(positions)
 
-                        search_from = prev_end
-                        continue
-
-                search_from = start_idx + 1
+                search_from = start_idx + 1 if not success else start_idx + anchor_len
 
             if not digits_to_remove:
                 return base
