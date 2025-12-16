@@ -531,6 +531,7 @@ def build_gui() -> None:
     test_window: tk.Toplevel | None = None
     test_treeview: ttk.Treeview | None = None
     test_records: list[tuple[str, str]] = []
+    pattern_table_regex = re.compile(r"[A-Z][가-힣]\d{2,3}")
 
     def format_timestamp(ts: float) -> str:
         ts_int = int(ts)
@@ -538,6 +539,8 @@ def build_gui() -> None:
         return time.strftime('%H:%M:%S', time.localtime(ts)) + f".{millis:03d}"
 
     class ChannelSegmentRecorder:
+        anchor_keyword = "ChannelName"
+
         def __init__(self, on_capture: Callable[[str], None]) -> None:
             self._on_capture = on_capture
             self._buffer = ""
@@ -569,7 +572,7 @@ def build_gui() -> None:
                     break
 
         def _activate_from_buffer(self) -> bool:
-            channel_idx = self._buffer.find("Channel")
+            channel_idx = self._buffer.find(self.anchor_keyword)
             if channel_idx == -1:
                 return False
 
@@ -580,18 +583,18 @@ def build_gui() -> None:
             self._active = True
             self._start_idx = channel_idx
             self._last_anchor_idx = channel_idx
-            self._scan_start_idx = channel_idx + len("Channel")
+            self._scan_start_idx = channel_idx + len(self.anchor_keyword)
             self._found_followup = False
             return True
 
         def _scan_active_segment(self) -> bool:
             while self._active:
                 window_limit = self._last_anchor_idx + 100
-                next_idx = self._buffer.find("Channel", self._scan_start_idx)
+                next_idx = self._buffer.find(self.anchor_keyword, self._scan_start_idx)
 
                 if next_idx != -1 and next_idx <= window_limit:
                     self._last_anchor_idx = next_idx
-                    self._scan_start_idx = next_idx + len("Channel")
+                    self._scan_start_idx = next_idx + len(self.anchor_keyword)
                     self._found_followup = True
                     continue
 
@@ -607,7 +610,7 @@ def build_gui() -> None:
             return False
 
         def _capture_segment(self) -> None:
-            end_idx = self._last_anchor_idx + len("Channel")
+            end_idx = self._last_anchor_idx + len(self.anchor_keyword)
             if self._found_followup:
                 capture = self._buffer[self._start_idx:end_idx]
                 self._on_capture(capture)
@@ -812,8 +815,8 @@ def build_gui() -> None:
 
     def log_channel_packet(payload: str) -> None:
         timestamp = time.time()
-        append_packet_group(timestamp, [f"[Channel 감지] {payload}"])
-        channel_packet_alert_var.set(f"{format_timestamp(timestamp)} Channel 패킷 감지")
+        append_packet_group(timestamp, [f"[ChannelName 감지] {payload}"])
+        channel_packet_alert_var.set(f"{format_timestamp(timestamp)} ChannelName 패킷 감지")
 
     class ChannelDetectionSequence:
         def __init__(self) -> None:
@@ -900,7 +903,7 @@ def build_gui() -> None:
                         )
                     )
 
-                    self._set_status("F3: Channel 문자열을 기다리는 중…")
+                    self._set_status("F3: ChannelName 문자열을 기다리는 중…")
                     first_packet = self._get_packet(timeout=None)
                     if first_packet is None:
                         break
@@ -957,7 +960,7 @@ def build_gui() -> None:
     channel_detection_sequence = ChannelDetectionSequence()
 
     def detect_channel_packet(payload: str, new_channel_logged: bool) -> None:
-        if "Channel" in payload:
+        if ChannelSegmentRecorder.anchor_keyword in payload:
             log_channel_packet(payload)
             channel_detection_sequence.notify_channel_packet(new_channel_logged)
 
@@ -1029,12 +1032,32 @@ def build_gui() -> None:
 
         channel_info_window.protocol("WM_DELETE_WINDOW", on_close_channel_window)
 
+    def build_pattern_table(text: str) -> str | None:
+        matches = pattern_table_regex.findall(text)
+        if not matches:
+            return None
+
+        col_width = max(len(match) for match in matches)
+        rows: list[str] = []
+        for idx in range(0, len(matches), 6):
+            chunk = matches[idx : idx + 6]
+            padded = [cell.ljust(col_width) for cell in chunk]
+            rows.append(" | ".join(padded))
+
+        return "\n".join(rows)
+
     def add_test_record(content: str) -> None:
         timestamp = format_timestamp(time.time())
-        test_records.append((timestamp, content))
+        table_text = build_pattern_table(content)
+        display_content = (
+            f"{content}\n\n[추출된 패턴]\n{table_text}"
+            if table_text
+            else content
+        )
+        test_records.append((timestamp, display_content))
         if test_treeview is not None:
             index = len(test_records)
-            test_treeview.insert("", "end", values=(index, timestamp, content))
+            test_treeview.insert("", "end", values=(index, timestamp, display_content))
 
     def refresh_test_treeview() -> None:
         if test_treeview is None:
@@ -1065,9 +1088,9 @@ def build_gui() -> None:
         info_label = ttk.Label(
             test_window,
             text=(
-                "Channel 문자열이 감지되면 해당 Channel로부터 정규화된 기준 100자 "
-                "내에서 다음 Channel을 찾고, 발견된 Channel을 새 기준점으로 삼아 "
-                "동일한 방식으로 반복 탐색하여 더 이상 Channel이 없을 때까지 "
+                "ChannelName 문자열이 감지되면 해당 ChannelName으로부터 정규화된 기준 100자 "
+                "내에서 다음 ChannelName을 찾고, 발견된 ChannelName을 새 기준점으로 삼아 "
+                "동일한 방식으로 반복 탐색하여 더 이상 ChannelName이 없을 때까지 "
                 "기록합니다."
             ),
             wraplength=480,
