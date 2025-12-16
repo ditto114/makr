@@ -530,7 +530,10 @@ def build_gui() -> None:
 
     test_window: tk.Toplevel | None = None
     test_treeview: ttk.Treeview | None = None
-    test_records: list[tuple[str, str]] = []
+    test_detail_text: tk.Text | None = None
+    test_pattern_table: ttk.Treeview | None = None
+    test_records: list[tuple[str, str, str | None, str, list[list[str]]]] = []
+    pattern_table_regex = re.compile(r"[A-Z][가-힣]\d{2,3}")
 
     def format_timestamp(ts: float) -> str:
         ts_int = int(ts)
@@ -538,6 +541,8 @@ def build_gui() -> None:
         return time.strftime('%H:%M:%S', time.localtime(ts)) + f".{millis:03d}"
 
     class ChannelSegmentRecorder:
+        anchor_keyword = "ChannelName"
+
         def __init__(self, on_capture: Callable[[str], None]) -> None:
             self._on_capture = on_capture
             self._buffer = ""
@@ -569,7 +574,7 @@ def build_gui() -> None:
                     break
 
         def _activate_from_buffer(self) -> bool:
-            channel_idx = self._buffer.find("Channel")
+            channel_idx = self._buffer.find(self.anchor_keyword)
             if channel_idx == -1:
                 return False
 
@@ -580,18 +585,18 @@ def build_gui() -> None:
             self._active = True
             self._start_idx = channel_idx
             self._last_anchor_idx = channel_idx
-            self._scan_start_idx = channel_idx + len("Channel")
+            self._scan_start_idx = channel_idx + len(self.anchor_keyword)
             self._found_followup = False
             return True
 
         def _scan_active_segment(self) -> bool:
             while self._active:
                 window_limit = self._last_anchor_idx + 100
-                next_idx = self._buffer.find("Channel", self._scan_start_idx)
+                next_idx = self._buffer.find(self.anchor_keyword, self._scan_start_idx)
 
                 if next_idx != -1 and next_idx <= window_limit:
                     self._last_anchor_idx = next_idx
-                    self._scan_start_idx = next_idx + len("Channel")
+                    self._scan_start_idx = next_idx + len(self.anchor_keyword)
                     self._found_followup = True
                     continue
 
@@ -607,7 +612,7 @@ def build_gui() -> None:
             return False
 
         def _capture_segment(self) -> None:
-            end_idx = self._last_anchor_idx + len("Channel")
+            end_idx = self._last_anchor_idx + len(self.anchor_keyword)
             if self._found_followup:
                 capture = self._buffer[self._start_idx:end_idx]
                 self._on_capture(capture)
@@ -812,8 +817,8 @@ def build_gui() -> None:
 
     def log_channel_packet(payload: str) -> None:
         timestamp = time.time()
-        append_packet_group(timestamp, [f"[Channel 감지] {payload}"])
-        channel_packet_alert_var.set(f"{format_timestamp(timestamp)} Channel 패킷 감지")
+        append_packet_group(timestamp, [f"[ChannelName 감지] {payload}"])
+        channel_packet_alert_var.set(f"{format_timestamp(timestamp)} ChannelName 패킷 감지")
 
     class ChannelDetectionSequence:
         def __init__(self) -> None:
@@ -900,7 +905,7 @@ def build_gui() -> None:
                         )
                     )
 
-                    self._set_status("F3: Channel 문자열을 기다리는 중…")
+                    self._set_status("F3: ChannelName 문자열을 기다리는 중…")
                     first_packet = self._get_packet(timeout=None)
                     if first_packet is None:
                         break
@@ -957,7 +962,7 @@ def build_gui() -> None:
     channel_detection_sequence = ChannelDetectionSequence()
 
     def detect_channel_packet(payload: str, new_channel_logged: bool) -> None:
-        if "Channel" in payload:
+        if ChannelSegmentRecorder.anchor_keyword in payload:
             log_channel_packet(payload)
             channel_detection_sequence.notify_channel_packet(new_channel_logged)
 
@@ -1029,28 +1034,91 @@ def build_gui() -> None:
 
         channel_info_window.protocol("WM_DELETE_WINDOW", on_close_channel_window)
 
+    def build_pattern_table(text: str) -> tuple[str | None, list[list[str]]]:
+        matches = pattern_table_regex.findall(text)
+        if not matches:
+            return None, []
+
+        col_width = max(len(match) for match in matches)
+        rows_for_view: list[list[str]] = []
+        formatted_rows: list[str] = []
+        for idx in range(0, len(matches), 6):
+            chunk = matches[idx : idx + 6]
+            padded = chunk + [""] * (6 - len(chunk))
+            rows_for_view.append(padded)
+            formatted_rows.append(
+                " | ".join(cell.ljust(col_width) if cell else "".ljust(col_width) for cell in padded)
+            )
+
+        return "\n".join(formatted_rows), rows_for_view
+
+    def update_pattern_table(rows: list[list[str]] | None = None) -> None:
+        if test_pattern_table is None:
+            return
+
+        for item in test_pattern_table.get_children():
+            test_pattern_table.delete(item)
+
+        if not rows:
+            test_pattern_table.insert("", "end", values=("(없음)", "", "", "", "", ""))
+            return
+
+        for row in rows:
+            padded = row + [""] * (6 - len(row))
+            test_pattern_table.insert("", "end", values=padded)
+
     def add_test_record(content: str) -> None:
         timestamp = format_timestamp(time.time())
-        test_records.append((timestamp, content))
+        table_text, table_rows = build_pattern_table(content)
+        display_content = (
+            f"{content}\n\n[추출된 패턴]\n{table_text}"
+            if table_text
+            else content
+        )
+        test_records.append((timestamp, content, table_text, display_content, table_rows))
         if test_treeview is not None:
             index = len(test_records)
-            test_treeview.insert("", "end", values=(index, timestamp, content))
+            item_id = test_treeview.insert("", "end", values=(index, timestamp, display_content))
+            test_treeview.selection_set(item_id)
+            update_test_detail(index)
+            update_pattern_table(table_rows)
+
+    def update_test_detail(selected_index: int | None = None) -> None:
+        if test_detail_text is None:
+            return
+
+        test_detail_text.configure(state="normal")
+        test_detail_text.delete("1.0", "end")
+
+        if selected_index is None or selected_index < 1 or selected_index > len(test_records):
+            test_detail_text.insert("1.0", "기록을 선택하세요.")
+            update_pattern_table(None)
+        else:
+            _, content, table_text, _, table_rows = test_records[selected_index - 1]
+            patterns = table_text or "(없음)"
+            detail_text = f"{content}\n\n[추출된 패턴]\n{patterns}"
+            test_detail_text.insert("1.0", detail_text)
+            update_pattern_table(table_rows)
+
+        test_detail_text.configure(state="disabled")
 
     def refresh_test_treeview() -> None:
         if test_treeview is None:
             return
         for item in test_treeview.get_children():
             test_treeview.delete(item)
-        for idx, (ts, content) in enumerate(test_records, start=1):
-            test_treeview.insert("", "end", values=(idx, ts, content))
+        for idx, (ts, _, _, display_content, _) in enumerate(test_records, start=1):
+            test_treeview.insert("", "end", values=(idx, ts, display_content))
+        update_test_detail(test_records and 1 or None)
 
     def clear_test_records() -> None:
         test_records.clear()
         refresh_test_treeview()
+        update_pattern_table(None)
         status_var.set("테스트 기록이 초기화되었습니다.")
 
     def show_test_window() -> None:
-        nonlocal test_window, test_treeview
+        nonlocal test_window, test_treeview, test_detail_text, test_pattern_table
         if test_window is not None and tk.Toplevel.winfo_exists(test_window):
             test_window.lift()
             test_window.focus_force()
@@ -1059,15 +1127,15 @@ def build_gui() -> None:
 
         test_window = tk.Toplevel(root)
         test_window.title("테스트")
-        test_window.geometry("520x320")
+        test_window.geometry("520x500")
         test_window.resizable(True, True)
 
         info_label = ttk.Label(
             test_window,
             text=(
-                "Channel 문자열이 감지되면 해당 Channel로부터 정규화된 기준 100자 "
-                "내에서 다음 Channel을 찾고, 발견된 Channel을 새 기준점으로 삼아 "
-                "동일한 방식으로 반복 탐색하여 더 이상 Channel이 없을 때까지 "
+                "ChannelName 문자열이 감지되면 해당 ChannelName으로부터 정규화된 기준 100자 "
+                "내에서 다음 ChannelName을 찾고, 발견된 ChannelName을 새 기준점으로 삼아 "
+                "동일한 방식으로 반복 탐색하여 더 이상 ChannelName이 없을 때까지 "
                 "기록합니다."
             ),
             wraplength=480,
@@ -1093,19 +1161,73 @@ def build_gui() -> None:
         tree.configure(yscrollcommand=scrollbar.set)
         scrollbar.pack(side="right", fill="y", padx=(0, 8))
 
+        detail_frame = ttk.LabelFrame(test_window, text="선택 기록 상세")
+        detail_frame.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+        detail_scroll = ttk.Scrollbar(detail_frame, orient="vertical")
+        detail_scroll.pack(side="right", fill="y")
+        detail_text = tk.Text(detail_frame, height=6, wrap="none", state="disabled")
+        detail_text.pack(fill="both", expand=True)
+        detail_text.configure(yscrollcommand=detail_scroll.set)
+        detail_scroll.configure(command=detail_text.yview)
+
+        pattern_frame = ttk.LabelFrame(test_window, text="추출된 패턴 표")
+        pattern_frame.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+        pattern_columns = [f"c{i}" for i in range(1, 7)]
+        pattern_table = ttk.Treeview(
+            pattern_frame,
+            columns=pattern_columns,
+            show="headings",
+            height=4,
+        )
+        for col in pattern_columns:
+            pattern_table.heading(col, text=col[-1])
+            pattern_table.column(col, width=70, anchor="center")
+        pattern_table.pack(side="left", fill="both", expand=True)
+        pattern_scroll = ttk.Scrollbar(pattern_frame, orient="vertical", command=pattern_table.yview)
+        pattern_table.configure(yscrollcommand=pattern_scroll.set)
+        pattern_scroll.pack(side="right", fill="y")
+
         button_bar = ttk.Frame(test_window)
         button_bar.pack(fill="x", padx=8, pady=(0, 8))
         ttk.Button(button_bar, text="기록 초기화", command=clear_test_records).pack(side="right")
 
         test_treeview = tree
+        test_detail_text = detail_text
+        test_pattern_table = pattern_table
         refresh_test_treeview()
 
+        def on_select_test_record(event: tk.Event[tk.Widget]) -> None:  # type: ignore[type-arg]
+            if test_treeview is None:
+                return
+            selection = test_treeview.selection()
+            if not selection:
+                update_test_detail(None)
+                return
+            item_id = selection[0]
+            values = test_treeview.item(item_id, "values")
+            try:
+                idx = int(values[0])
+            except (ValueError, IndexError):
+                update_test_detail(None)
+                return
+            update_test_detail(idx)
+
+        tree.bind("<<TreeviewSelect>>", on_select_test_record)
+
         def on_close_test_window() -> None:
-            nonlocal test_window, test_treeview
+            nonlocal test_window, test_treeview, test_detail_text, test_pattern_table
             if test_treeview is not None:
                 for item in test_treeview.get_children():
                     test_treeview.delete(item)
             test_treeview = None
+            if test_detail_text is not None:
+                test_detail_text.destroy()
+            test_detail_text = None
+            if test_pattern_table is not None:
+                for item in test_pattern_table.get_children():
+                    test_pattern_table.delete(item)
+                test_pattern_table.destroy()
+            test_pattern_table = None
             window = test_window
             test_window = None
             if window is not None:
