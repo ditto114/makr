@@ -542,6 +542,10 @@ def build_gui() -> None:
             self._on_capture = on_capture
             self._buffer = ""
             self._active = False
+            self._start_idx = 0
+            self._last_anchor_idx = 0
+            self._scan_start_idx = 0
+            self._found_followup = False
 
         @staticmethod
         def _normalize(text: str) -> str:
@@ -554,41 +558,66 @@ def build_gui() -> None:
             self._process(normalized)
 
         def _process(self, normalized: str) -> None:
-            segment = normalized
-            while segment:
+            self._buffer += normalized
+
+            while True:
                 if not self._active:
-                    channel_idx = segment.find("Channel")
-                    if channel_idx == -1:
-                        return
-                    self._active = True
-                    self._buffer = segment[channel_idx:]
-                    segment = ""
-                else:
-                    self._buffer += segment
-                    segment = ""
+                    if not self._activate_from_buffer():
+                        break
 
-                if self._active:
-                    search_limit = min(len(self._buffer), 100)
-                    limited = self._buffer[:search_limit]
-                    channel_positions = [m.start() for m in re.finditer("Channel", limited)]
+                if not self._scan_active_segment():
+                    break
 
-                    if len(channel_positions) >= 2:
-                        last_idx = channel_positions[-1] + len("Channel")
-                        capture = self._buffer[:last_idx]
-                        self._on_capture(capture)
-                        remaining = self._buffer[last_idx:]
-                        self._buffer = ""
-                        self._active = False
-                        if remaining:
-                            segment = remaining
-                            continue
-                    elif search_limit >= 100:
-                        remaining = self._buffer[search_limit:]
-                        self._buffer = ""
-                        self._active = False
-                        if remaining:
-                            segment = remaining
-                            continue
+        def _activate_from_buffer(self) -> bool:
+            channel_idx = self._buffer.find("Channel")
+            if channel_idx == -1:
+                return False
+
+            if channel_idx > 0:
+                self._buffer = self._buffer[channel_idx:]
+                channel_idx = 0
+
+            self._active = True
+            self._start_idx = channel_idx
+            self._last_anchor_idx = channel_idx
+            self._scan_start_idx = channel_idx + len("Channel")
+            self._found_followup = False
+            return True
+
+        def _scan_active_segment(self) -> bool:
+            while self._active:
+                window_limit = self._last_anchor_idx + 100
+                next_idx = self._buffer.find("Channel", self._scan_start_idx)
+
+                if next_idx != -1 and next_idx <= window_limit:
+                    self._last_anchor_idx = next_idx
+                    self._scan_start_idx = next_idx + len("Channel")
+                    self._found_followup = True
+                    continue
+
+                has_surpassed_window = len(self._buffer) > window_limit
+                next_is_beyond_window = next_idx != -1 and next_idx > window_limit
+
+                if not has_surpassed_window and not next_is_beyond_window:
+                    return False
+
+                self._capture_segment()
+                return True
+
+            return False
+
+        def _capture_segment(self) -> None:
+            end_idx = self._last_anchor_idx + len("Channel")
+            if self._found_followup:
+                capture = self._buffer[self._start_idx:end_idx]
+                self._on_capture(capture)
+
+            self._buffer = self._buffer[end_idx:]
+            self._active = False
+            self._start_idx = 0
+            self._last_anchor_idx = 0
+            self._scan_start_idx = 0
+            self._found_followup = False
 
     def append_packet_group(
         timestamp_sec: float, payloads: list[str], *, label_prefix: str | None = None
@@ -1036,8 +1065,9 @@ def build_gui() -> None:
         info_label = ttk.Label(
             test_window,
             text=(
-                "Channel 문자열이 감지되면 정규화된 문자열 기준 100자 이내에서 다음 "
-                "Channel 을 찾고, 같은 범위에서 이어지는 Channel 이 없을 때까지 "
+                "Channel 문자열이 감지되면 해당 Channel로부터 정규화된 기준 100자 "
+                "내에서 다음 Channel을 찾고, 발견된 Channel을 새 기준점으로 삼아 "
+                "동일한 방식으로 반복 탐색하여 더 이상 Channel이 없을 때까지 "
                 "기록합니다."
             ),
             wraplength=480,
