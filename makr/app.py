@@ -24,6 +24,9 @@ from pynput import keyboard, mouse
 
 APP_STATE_PATH = Path(__file__).with_name("app_state.json")
 
+# pyautogui의 기본 지연(0.1초)을 제거해 클릭 간 딜레이를 사용자 설정값에만 의존하도록 합니다.
+pyautogui.PAUSE = 0
+
 
 def load_app_state() -> dict:
     if not APP_STATE_PATH.exists():
