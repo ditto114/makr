@@ -241,22 +241,71 @@ def build_gui() -> None:
 
     debug_window: tk.Toplevel | None = None
     debug_log_widget: tk.Text | None = None
+    debug_logs: list[str] = []
+    debug_logs_lock = threading.Lock()
 
     def append_debug_log(message: str) -> None:
         nonlocal debug_log_widget
-        if debug_log_widget is None:
-            return
-        timestamp = format_timestamp(time.time())
-        debug_log_widget.configure(state="normal")
-        debug_log_widget.insert(tk.END, f"{timestamp} - {message}\n")
-        debug_log_widget.see(tk.END)
-        debug_log_widget.configure(state="disabled")
+        timestamped = f"{format_timestamp(time.time())} - {message}"
+        with debug_logs_lock:
+            debug_logs.append(timestamped)
 
-    def on_debug_click(event: tk.Event) -> None:
-        append_debug_log(f"[클릭] ({int(event.x_root)}, {int(event.y_root)})")
+        def _write_log() -> None:
+            if debug_log_widget is None:
+                return
+            debug_log_widget.configure(state="normal")
+            debug_log_widget.insert(tk.END, f"{timestamped}\n")
+            debug_log_widget.see(tk.END)
+            debug_log_widget.configure(state="disabled")
 
-    def on_debug_key(event: tk.Event) -> None:
-        append_debug_log(f"[키 입력] {event.keysym}")
+        root.after(0, _write_log)
+
+    class InputDebugRecorder:
+        def __init__(self, log_callback: Callable[[str], None]) -> None:
+            self._log_callback = log_callback
+            self._mouse_listener: mouse.Listener | None = None
+            self._keyboard_listener: keyboard.Listener | None = None
+            self._lock = threading.Lock()
+
+        def start(self) -> None:
+            with self._lock:
+                if self._mouse_listener is not None or self._keyboard_listener is not None:
+                    return
+                self._mouse_listener = mouse.Listener(on_click=self._on_mouse_click)
+                self._keyboard_listener = keyboard.Listener(
+                    on_press=self._on_key_press, on_release=self._on_key_release
+                )
+                self._mouse_listener.start()
+                self._keyboard_listener.start()
+
+        def stop(self) -> None:
+            with self._lock:
+                if self._mouse_listener is not None:
+                    self._mouse_listener.stop()
+                if self._keyboard_listener is not None:
+                    self._keyboard_listener.stop()
+                self._mouse_listener = None
+                self._keyboard_listener = None
+
+        def _on_mouse_click(
+            self, x: float, y: float, button: mouse.Button, pressed: bool
+        ) -> bool:
+            action = "누름" if pressed else "뗌"
+            self._log_callback(
+                f"[마우스 {action}] {button.name if hasattr(button, 'name') else button} "
+                f"({int(x)}, {int(y)})"
+            )
+            return True
+
+        def _on_key_press(self, key: keyboard.Key | keyboard.KeyCode) -> None:
+            key_name = getattr(key, "char", None) or str(key)
+            self._log_callback(f"[키 입력] {key_name}")
+
+        def _on_key_release(self, key: keyboard.Key | keyboard.KeyCode) -> None:
+            key_name = getattr(key, "char", None) or str(key)
+            self._log_callback(f"[키 해제] {key_name}")
+
+    debug_recorder = InputDebugRecorder(append_debug_log)
 
     def close_debug_window() -> None:
         nonlocal debug_window, debug_log_widget
@@ -279,7 +328,7 @@ def build_gui() -> None:
 
         info_label = tk.Label(
             debug_window,
-            text="클릭 및 키보드 입력 기록 (ms 단위)",
+            text="F3 동작 중 발생한 마우스/키보드 기록 (ms 단위)",
             anchor="w",
         )
         info_label.pack(fill="x", padx=8, pady=(8, 4))
@@ -292,8 +341,12 @@ def build_gui() -> None:
         log_scroll.pack(side="right", fill="y")
         debug_log_widget.configure(yscrollcommand=log_scroll.set)
 
-        debug_window.bind("<Button>", on_debug_click)
-        debug_window.bind("<Key>", on_debug_key)
+        with debug_logs_lock:
+            for line in debug_logs:
+                debug_log_widget.configure(state="normal")
+                debug_log_widget.insert(tk.END, f"{line}\n")
+                debug_log_widget.configure(state="disabled")
+
         debug_window.protocol("WM_DELETE_WINDOW", close_debug_window)
         debug_window.focus_force()
 
@@ -595,11 +648,15 @@ def build_gui() -> None:
             self.running = True
             self._clear_queue()
             self.newline_mode = newline_mode
+            debug_recorder.start()
+            append_debug_log("F3 매크로 시작")
             threading.Thread(target=self._run_sequence, daemon=True).start()
 
         def stop(self) -> None:
             self.running = False
             self._clear_queue()
+            debug_recorder.stop()
+            append_debug_log("F3 매크로 중단")
 
         def notify_channel_packet(self, new_channel_logged: bool) -> None:
             if not self.running:
@@ -708,6 +765,8 @@ def build_gui() -> None:
             finally:
                 self.running = False
                 self._run_on_main(controller._update_status)
+                debug_recorder.stop()
+                append_debug_log("F3 매크로 종료")
 
         def _delay_seconds(self, delay_ms: int) -> float:
             return max(delay_ms, 0) / 1000
@@ -812,6 +871,7 @@ def build_gui() -> None:
         if hotkey_listener is not None:
             hotkey_listener.stop()
         channel_detection_sequence.stop()
+        debug_recorder.stop()
         stop_packet_capture()
         root.destroy()
 
