@@ -12,6 +12,7 @@ import threading
 import time
 import tkinter as tk
 from collections import deque
+from dataclasses import dataclass
 from queue import Empty, Queue
 from pathlib import Path
 from tkinter import messagebox, ttk
@@ -44,6 +45,18 @@ def save_app_state(state: dict) -> None:
         messagebox.showwarning("설정 저장", "입력값을 저장하는 중 오류가 발생했습니다.")
 
 
+@dataclass
+class DelayConfig:
+    f2_before_esc: Callable[[], int]
+    f2_before_pos1: Callable[[], int]
+    f2_before_pos2: Callable[[], int]
+    f1_before_pos3: Callable[[], int]
+    f1_before_enter: Callable[[], int]
+    f1_newline_before_pos4: Callable[[], int]
+    f1_newline_before_pos3: Callable[[], int]
+    f1_newline_before_enter: Callable[[], int]
+
+
 class MacroController:
     """실행 순서를 관리하고 GUI 콜백을 제공합니다."""
 
@@ -51,14 +64,12 @@ class MacroController:
         self,
         entries: dict[str, tuple[tk.Entry, tk.Entry]],
         status_var: tk.StringVar,
-        click_delay_provider: Callable[[], int],
-        step_transition_delay_provider: Callable[[], int],
+        delay_config: DelayConfig,
     ) -> None:
         self.entries = entries
         self.status_var = status_var
         self.current_step = 1
-        self.click_delay_provider = click_delay_provider
-        self.step_transition_delay_provider = step_transition_delay_provider
+        self.delay_config = delay_config
         self.input_logger: MacroInputLogger | None = None
         self._update_status()
 
@@ -92,6 +103,11 @@ class MacroController:
     def _delay_seconds(self, delay_ms: int) -> float:
         return max(delay_ms, 0) / 1000
 
+    def _sleep_ms(self, delay_ms: int) -> None:
+        delay_sec = self._delay_seconds(delay_ms)
+        if delay_sec:
+            time.sleep(delay_sec)
+
     def run_step(self, *, newline_mode: bool = False) -> None:
         """실행 버튼 콜백: 현재 단계 수행 후 다음 단계로 이동."""
         if self.current_step == 1:
@@ -104,6 +120,7 @@ class MacroController:
 
     def reset_and_run_first(self, *, newline_mode: bool = False) -> None:
         """다시 버튼 콜백: Esc 입력 후 1단계를 재실행."""
+        self._sleep_ms(self.delay_config.f2_before_esc())
         self._press_key("esc", label="초기화 ESC")
         self.current_step = 1
         self._update_status()
@@ -116,10 +133,9 @@ class MacroController:
         pos2 = self._get_point("pos2")
         if pos1 is None or pos2 is None:
             return
+        self._sleep_ms(self.delay_config.f2_before_pos1())
         self._click_point(pos1, label="1단계 pos1")
-        click_delay_sec = self._delay_seconds(self.click_delay_provider())
-        if click_delay_sec:
-            time.sleep(click_delay_sec)
+        self._sleep_ms(self.delay_config.f2_before_pos2())
         self._click_point(pos2, label="1단계 pos2")
 
     def _run_step_two(self, *, newline_mode: bool = False) -> None:
@@ -130,9 +146,17 @@ class MacroController:
             pos4 = self._get_point("pos4")
             if pos4 is None:
                 return
+            self._sleep_ms(self.delay_config.f1_newline_before_pos4())
             self._click_point(pos4, label="2단계 pos4")
-            time.sleep(self._delay_seconds(30))
+            self._sleep_ms(self.delay_config.f1_newline_before_pos3())
+        else:
+            self._sleep_ms(self.delay_config.f1_before_pos3())
         self._click_point(pos3, label="2단계 pos3")
+        self._sleep_ms(
+            self.delay_config.f1_newline_before_enter()
+            if newline_mode
+            else self.delay_config.f1_before_enter()
+        )
         self._press_key("enter", label="2단계 Enter")
 
 
@@ -144,9 +168,23 @@ def build_gui() -> None:
     saved_state = load_app_state()
 
     status_var = tk.StringVar()
-    click_delay_var = tk.StringVar(value=str(saved_state.get("click_delay_ms", "100")))
-    step_transition_delay_var = tk.StringVar(value=str(saved_state.get("step_transition_delay_ms", "200")))
+    f2_before_esc_var = tk.StringVar(value=str(saved_state.get("delay_f2_before_esc_ms", "0")))
+    f2_before_pos1_var = tk.StringVar(value=str(saved_state.get("delay_f2_before_pos1_ms", "0")))
+    f2_before_pos2_var = tk.StringVar(
+        value=str(saved_state.get("delay_f2_before_pos2_ms", saved_state.get("click_delay_ms", "100")))
+    )
     channel_wait_window_var = tk.StringVar(value=str(saved_state.get("channel_wait_window_ms", "500")))
+    f1_before_pos3_var = tk.StringVar(value=str(saved_state.get("delay_f1_before_pos3_ms", "0")))
+    f1_before_enter_var = tk.StringVar(value=str(saved_state.get("delay_f1_before_enter_ms", "0")))
+    f1_newline_before_pos4_var = tk.StringVar(
+        value=str(saved_state.get("delay_f1_newline_before_pos4_ms", "0"))
+    )
+    f1_newline_before_pos3_var = tk.StringVar(
+        value=str(saved_state.get("delay_f1_newline_before_pos3_ms", "30"))
+    )
+    f1_newline_before_enter_var = tk.StringVar(
+        value=str(saved_state.get("delay_f1_newline_before_enter_ms", "0"))
+    )
     packet_limit_var = tk.StringVar(value=str(saved_state.get("packet_limit", "200")))
     packet_status_var = tk.StringVar(value="패킷 캡쳐 중지됨")
     newline_var = tk.BooleanVar(value=bool(saved_state.get("newline_after_pos2", False)))
@@ -178,11 +216,8 @@ def build_gui() -> None:
         var.set(str(delay_ms))
         return delay_ms
 
-    def get_click_delay_ms() -> int:
-        return _parse_delay_ms(click_delay_var, "1단계 클릭 딜레이", 100)
-
-    def get_step_transition_delay_ms() -> int:
-        return _parse_delay_ms(step_transition_delay_var, "1→2단계 전환 딜레이", 200)
+    def _make_delay_getter(var: tk.StringVar, label: str, fallback: int) -> Callable[[], int]:
+        return lambda: _parse_delay_ms(var, label, fallback)
 
     def get_channel_wait_window_ms() -> int:
         return _parse_delay_ms(channel_wait_window_var, "채널 감지 대기", 500)
@@ -248,12 +283,24 @@ def build_gui() -> None:
     add_coordinate_row("pos3", "pos3")
     add_coordinate_row("pos4", "pos4")
 
-    controller = MacroController(
-        entries,
-        status_var,
-        click_delay_provider=get_click_delay_ms,
-        step_transition_delay_provider=get_step_transition_delay_ms,
+    delay_config = DelayConfig(
+        f2_before_esc=_make_delay_getter(f2_before_esc_var, "(F2) Esc 전", 0),
+        f2_before_pos1=_make_delay_getter(f2_before_pos1_var, "(F2) pos1 전", 0),
+        f2_before_pos2=_make_delay_getter(f2_before_pos2_var, "(F2) pos2 전", 100),
+        f1_before_pos3=_make_delay_getter(f1_before_pos3_var, "(F1-1) pos3 전", 0),
+        f1_before_enter=_make_delay_getter(f1_before_enter_var, "(F1-1) Enter 전", 0),
+        f1_newline_before_pos4=_make_delay_getter(
+            f1_newline_before_pos4_var, "(F1-2) pos4 전", 0
+        ),
+        f1_newline_before_pos3=_make_delay_getter(
+            f1_newline_before_pos3_var, "(F1-2) pos3 전", 30
+        ),
+        f1_newline_before_enter=_make_delay_getter(
+            f1_newline_before_enter_var, "(F1-2) Enter 전", 0
+        ),
     )
+
+    controller = MacroController(entries, status_var, delay_config)
 
     debug_window: tk.Toplevel | None = None
     debug_log_widget: tk.Text | None = None
@@ -371,24 +418,49 @@ def build_gui() -> None:
     delay_frame = tk.LabelFrame(root, text="딜레이 설정")
     delay_frame.pack(fill="x", padx=10, pady=(0, 10))
 
-    def add_delay_input(label: str, var: tk.StringVar, description: str) -> None:
+    def add_step_delay_row(title: str, steps: list[tuple[tk.StringVar, str]]) -> None:
         row = tk.Frame(delay_frame)
         row.pack(fill="x", pady=3)
 
-        tk.Label(row, text=label, width=18, anchor="w").pack(side="left")
-        tk.Entry(row, textvariable=var, width=8).pack(side="left", padx=(0, 6))
-        tk.Label(row, text=description).pack(side="left")
+        tk.Label(row, text=title, width=8, anchor="w").pack(side="left")
+        for idx, (var, label_text) in enumerate(steps):
+            tk.Entry(row, textvariable=var, width=6).pack(side="left", padx=(0, 4))
+            tk.Label(row, text=label_text).pack(side="left", padx=(0, 4))
+            if idx < len(steps) - 1:
+                tk.Label(row, text="-").pack(side="left", padx=(0, 4))
 
-    add_delay_input("1단계 클릭 간 (ms)", click_delay_var, "pos1 → pos2 클릭 사이 지연입니다.")
-    add_delay_input(
-        "1→2단계 전환 (ms)",
-        step_transition_delay_var,
-        "반복 실행 시 1단계 후 2단계로 넘어가기 전 대기 시간입니다.",
+    def add_single_delay_row(title: str, var: tk.StringVar, suffix: str = "ms") -> None:
+        row = tk.Frame(delay_frame)
+        row.pack(fill="x", pady=3)
+
+        tk.Label(row, text=title, width=8, anchor="w").pack(side="left")
+        tk.Entry(row, textvariable=var, width=8).pack(side="left", padx=(0, 6))
+        if suffix:
+            tk.Label(row, text=suffix).pack(side="left")
+
+    add_step_delay_row(
+        "(F2)",
+        [
+            (f2_before_esc_var, "Esc"),
+            (f2_before_pos1_var, "pos1"),
+            (f2_before_pos2_var, "pos2"),
+        ],
     )
-    add_delay_input(
-        "채널 감지 대기 (ms)",
-        channel_wait_window_var,
-        "Channel 문자열 감지 간 허용 대기 시간입니다.",
+    add_single_delay_row("채널감지대기", channel_wait_window_var, "ms (기본 500)")
+    add_step_delay_row(
+        "(F1-1)",
+        [
+            (f1_before_pos3_var, "pos3"),
+            (f1_before_enter_var, "Enter"),
+        ],
+    )
+    add_step_delay_row(
+        "(F1-2)",
+        [
+            (f1_newline_before_pos4_var, "pos4"),
+            (f1_newline_before_pos3_var, "pos3"),
+            (f1_newline_before_enter_var, "Enter"),
+        ],
     )
 
     status_label = tk.Label(root, textvariable=status_var, fg="#006400")
@@ -539,8 +611,14 @@ def build_gui() -> None:
             coordinates[key] = {"x": x_entry.get(), "y": y_entry.get()}
         return {
             "coordinates": coordinates,
-            "click_delay_ms": click_delay_var.get(),
-            "step_transition_delay_ms": step_transition_delay_var.get(),
+            "delay_f2_before_esc_ms": f2_before_esc_var.get(),
+            "delay_f2_before_pos1_ms": f2_before_pos1_var.get(),
+            "delay_f2_before_pos2_ms": f2_before_pos2_var.get(),
+            "delay_f1_before_pos3_ms": f1_before_pos3_var.get(),
+            "delay_f1_before_enter_ms": f1_before_enter_var.get(),
+            "delay_f1_newline_before_pos4_ms": f1_newline_before_pos4_var.get(),
+            "delay_f1_newline_before_pos3_ms": f1_newline_before_pos3_var.get(),
+            "delay_f1_newline_before_enter_ms": f1_newline_before_enter_var.get(),
             "channel_wait_window_ms": channel_wait_window_var.get(),
             "packet_port": packet_port_var.get(),
             "packet_limit": packet_limit_var.get(),
