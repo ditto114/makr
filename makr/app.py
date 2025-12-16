@@ -415,6 +415,9 @@ def build_gui() -> None:
     debug_button = tk.Button(button_frame, text="디버깅", width=12, command=show_debug_window)
     debug_button.pack(side="left", padx=5)
 
+    test_button = tk.Button(button_frame, text="테스트", width=12)
+    test_button.pack(side="left", padx=5)
+
     delay_frame = tk.LabelFrame(root, text="딜레이 설정")
     delay_frame.pack(fill="x", padx=10, pady=(0, 10))
 
@@ -525,10 +528,65 @@ def build_gui() -> None:
         "strict": re.compile(r"[A-Z]-[가-힣]\d{3}"),
     }
 
+    test_window: tk.Toplevel | None = None
+    test_treeview: ttk.Treeview | None = None
+    test_records: list[tuple[str, str]] = []
+
     def format_timestamp(ts: float) -> str:
         ts_int = int(ts)
         millis = int((ts - ts_int) * 1000)
         return time.strftime('%H:%M:%S', time.localtime(ts)) + f".{millis:03d}"
+
+    class ChannelSegmentRecorder:
+        def __init__(self, on_capture: Callable[[str], None]) -> None:
+            self._on_capture = on_capture
+            self._buffer = ""
+            self._active = False
+
+        @staticmethod
+        def _normalize(text: str) -> str:
+            return re.sub(r"[^A-Za-z0-9가-힣]+", "", text)
+
+        def feed(self, text: str) -> None:
+            normalized = self._normalize(text)
+            if not normalized:
+                return
+            self._process(normalized)
+
+        def _process(self, normalized: str) -> None:
+            segment = normalized
+            while segment:
+                if not self._active:
+                    channel_idx = segment.find("Channel")
+                    if channel_idx == -1:
+                        return
+                    self._active = True
+                    self._buffer = segment[channel_idx:]
+                    segment = ""
+                else:
+                    self._buffer += segment
+                    segment = ""
+
+                if self._active:
+                    search_limit = min(len(self._buffer), 100)
+                    limited = self._buffer[:search_limit]
+                    next_idx = limited.find("Channel", len("Channel"))
+                    if next_idx != -1:
+                        capture = self._buffer[: next_idx + len("Channel")]
+                        self._on_capture(capture)
+                        remaining = self._buffer[next_idx + len("Channel") :]
+                        self._buffer = ""
+                        self._active = False
+                        if remaining:
+                            segment = remaining
+                            continue
+                    elif search_limit >= 100:
+                        remaining = self._buffer[search_limit:]
+                        self._buffer = ""
+                        self._active = False
+                        if remaining:
+                            segment = remaining
+                            continue
 
     def append_packet_group(
         timestamp_sec: float, payloads: list[str], *, label_prefix: str | None = None
@@ -597,6 +655,7 @@ def build_gui() -> None:
     def process_packet_detection(text: str) -> None:
         new_channel_logged = detect_channel_names(text)
         detect_channel_packet(text, new_channel_logged)
+        channel_segment_recorder.feed(text)
 
     def enqueue_packet_text(text: str) -> None:
         timestamp_sec = int(time.time())
@@ -938,6 +997,92 @@ def build_gui() -> None:
                 window.destroy()
 
         channel_info_window.protocol("WM_DELETE_WINDOW", on_close_channel_window)
+
+    def add_test_record(content: str) -> None:
+        timestamp = format_timestamp(time.time())
+        test_records.append((timestamp, content))
+        if test_treeview is not None:
+            index = len(test_records)
+            test_treeview.insert("", "end", values=(index, timestamp, content))
+
+    def refresh_test_treeview() -> None:
+        if test_treeview is None:
+            return
+        for item in test_treeview.get_children():
+            test_treeview.delete(item)
+        for idx, (ts, content) in enumerate(test_records, start=1):
+            test_treeview.insert("", "end", values=(idx, ts, content))
+
+    def clear_test_records() -> None:
+        test_records.clear()
+        refresh_test_treeview()
+        status_var.set("테스트 기록이 초기화되었습니다.")
+
+    def show_test_window() -> None:
+        nonlocal test_window, test_treeview
+        if test_window is not None and tk.Toplevel.winfo_exists(test_window):
+            test_window.lift()
+            test_window.focus_force()
+            refresh_test_treeview()
+            return
+
+        test_window = tk.Toplevel(root)
+        test_window.title("테스트")
+        test_window.geometry("520x320")
+        test_window.resizable(True, True)
+
+        info_label = ttk.Label(
+            test_window,
+            text=(
+                "Channel 문자열이 감지되면 다음 Channel 까지 정규화된 문자열을 "
+                "기록합니다 (100자 범위 내)."
+            ),
+            wraplength=480,
+            justify="left",
+        )
+        info_label.pack(fill="x", padx=8, pady=(8, 4))
+
+        tree = ttk.Treeview(
+            test_window,
+            columns=("index", "time", "content"),
+            show="headings",
+            height=10,
+        )
+        tree.heading("index", text="#")
+        tree.heading("time", text="시간")
+        tree.heading("content", text="기록")
+        tree.column("index", width=40, anchor="center")
+        tree.column("time", width=120, anchor="center")
+        tree.column("content", width=340, anchor="w")
+        tree.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+
+        scrollbar = ttk.Scrollbar(test_window, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y", padx=(0, 8))
+
+        button_bar = ttk.Frame(test_window)
+        button_bar.pack(fill="x", padx=8, pady=(0, 8))
+        ttk.Button(button_bar, text="기록 초기화", command=clear_test_records).pack(side="right")
+
+        test_treeview = tree
+        refresh_test_treeview()
+
+        def on_close_test_window() -> None:
+            nonlocal test_window, test_treeview
+            if test_treeview is not None:
+                for item in test_treeview.get_children():
+                    test_treeview.delete(item)
+            test_treeview = None
+            window = test_window
+            test_window = None
+            if window is not None:
+                window.destroy()
+
+        test_window.protocol("WM_DELETE_WINDOW", on_close_test_window)
+
+    channel_segment_recorder = ChannelSegmentRecorder(add_test_record)
+
+    test_button.configure(command=show_test_window)
 
     def on_hotkey_press(key: keyboard.Key) -> None:
         if key == keyboard.Key.f1:
