@@ -11,7 +11,7 @@ import re
 import threading
 import time
 import tkinter as tk
-from collections import deque
+from collections import Counter, deque
 from dataclasses import dataclass
 from queue import Empty, Queue
 from pathlib import Path
@@ -559,7 +559,7 @@ def build_gui() -> None:
             digits_to_remove: list[int] = []
             search_from = 0
             base_len = len(base)
-            anchor_sequence = [f"{i}PopWorldId" for i in range(1, 10)]
+            anchor_sequence = [f"{i}PopWorldId" for i in range(0, 10)]
 
             while True:
                 start_idx = base.find(anchor_sequence[0], search_from)
@@ -583,10 +583,26 @@ def build_gui() -> None:
                     prev_end = found_idx + len(seq)
 
                 if success:
-                    digits_to_remove.extend(positions)
-                    search_from = prev_end
-                else:
-                    search_from = start_idx + 1
+                    prefixes: list[str] = []
+
+                    for pos in positions:
+                        prefix_idx = pos - 1
+                        if prefix_idx < 0:
+                            success = False
+                            break
+                        prefixes.append(base[prefix_idx])
+
+                    if success:
+                        prefix_counter = Counter(prefixes)
+                        most_common_count = prefix_counter.most_common(1)[0][1]
+
+                        if most_common_count < 7:
+                            digits_to_remove.extend(positions)
+
+                        search_from = prev_end
+                        continue
+
+                search_from = start_idx + 1
 
             if not digits_to_remove:
                 return base
