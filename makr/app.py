@@ -530,7 +530,8 @@ def build_gui() -> None:
 
     test_window: tk.Toplevel | None = None
     test_treeview: ttk.Treeview | None = None
-    test_records: list[tuple[str, str]] = []
+    test_detail_text: tk.Text | None = None
+    test_records: list[tuple[str, str, str | None, str]] = []
     pattern_table_regex = re.compile(r"[A-Z][가-힣]\d{2,3}")
 
     def format_timestamp(ts: float) -> str:
@@ -1054,18 +1055,38 @@ def build_gui() -> None:
             if table_text
             else content
         )
-        test_records.append((timestamp, display_content))
+        test_records.append((timestamp, content, table_text, display_content))
         if test_treeview is not None:
             index = len(test_records)
-            test_treeview.insert("", "end", values=(index, timestamp, display_content))
+            item_id = test_treeview.insert("", "end", values=(index, timestamp, display_content))
+            test_treeview.selection_set(item_id)
+            update_test_detail(index)
+
+    def update_test_detail(selected_index: int | None = None) -> None:
+        if test_detail_text is None:
+            return
+
+        test_detail_text.configure(state="normal")
+        test_detail_text.delete("1.0", "end")
+
+        if selected_index is None or selected_index < 1 or selected_index > len(test_records):
+            test_detail_text.insert("1.0", "기록을 선택하세요.")
+        else:
+            _, content, table_text, _ = test_records[selected_index - 1]
+            patterns = table_text or "(없음)"
+            detail_text = f"{content}\n\n[추출된 패턴]\n{patterns}"
+            test_detail_text.insert("1.0", detail_text)
+
+        test_detail_text.configure(state="disabled")
 
     def refresh_test_treeview() -> None:
         if test_treeview is None:
             return
         for item in test_treeview.get_children():
             test_treeview.delete(item)
-        for idx, (ts, content) in enumerate(test_records, start=1):
-            test_treeview.insert("", "end", values=(idx, ts, content))
+        for idx, (ts, _, _, display_content) in enumerate(test_records, start=1):
+            test_treeview.insert("", "end", values=(idx, ts, display_content))
+        update_test_detail(test_records and 1 or None)
 
     def clear_test_records() -> None:
         test_records.clear()
@@ -1116,19 +1137,50 @@ def build_gui() -> None:
         tree.configure(yscrollcommand=scrollbar.set)
         scrollbar.pack(side="right", fill="y", padx=(0, 8))
 
+        detail_frame = ttk.LabelFrame(test_window, text="선택 기록 상세")
+        detail_frame.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+        detail_scroll = ttk.Scrollbar(detail_frame, orient="vertical")
+        detail_scroll.pack(side="right", fill="y")
+        detail_text = tk.Text(detail_frame, height=6, wrap="none", state="disabled")
+        detail_text.pack(fill="both", expand=True)
+        detail_text.configure(yscrollcommand=detail_scroll.set)
+        detail_scroll.configure(command=detail_text.yview)
+
         button_bar = ttk.Frame(test_window)
         button_bar.pack(fill="x", padx=8, pady=(0, 8))
         ttk.Button(button_bar, text="기록 초기화", command=clear_test_records).pack(side="right")
 
         test_treeview = tree
+        test_detail_text = detail_text
         refresh_test_treeview()
 
+        def on_select_test_record(event: tk.Event[tk.Widget]) -> None:  # type: ignore[type-arg]
+            if test_treeview is None:
+                return
+            selection = test_treeview.selection()
+            if not selection:
+                update_test_detail(None)
+                return
+            item_id = selection[0]
+            values = test_treeview.item(item_id, "values")
+            try:
+                idx = int(values[0])
+            except (ValueError, IndexError):
+                update_test_detail(None)
+                return
+            update_test_detail(idx)
+
+        tree.bind("<<TreeviewSelect>>", on_select_test_record)
+
         def on_close_test_window() -> None:
-            nonlocal test_window, test_treeview
+            nonlocal test_window, test_treeview, test_detail_text
             if test_treeview is not None:
                 for item in test_treeview.get_children():
                     test_treeview.delete(item)
             test_treeview = None
+            if test_detail_text is not None:
+                test_detail_text.destroy()
+            test_detail_text = None
             window = test_window
             test_window = None
             if window is not None:
