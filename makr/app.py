@@ -252,10 +252,10 @@ def build_gui() -> None:
         debug_log_widget.see(tk.END)
         debug_log_widget.configure(state="disabled")
 
-    def on_debug_click(event: tk.Event[tk.Misc]) -> None:
+    def on_debug_click(event: tk.Event) -> None:
         append_debug_log(f"[클릭] ({int(event.x_root)}, {int(event.y_root)})")
 
-    def on_debug_key(event: tk.Event[tk.Misc]) -> None:
+    def on_debug_key(event: tk.Event) -> None:
         append_debug_log(f"[키 입력] {event.keysym}")
 
     def close_debug_window() -> None:
