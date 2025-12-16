@@ -239,6 +239,64 @@ def build_gui() -> None:
         step_transition_delay_provider=get_step_transition_delay_ms,
     )
 
+    debug_window: tk.Toplevel | None = None
+    debug_log_widget: tk.Text | None = None
+
+    def append_debug_log(message: str) -> None:
+        nonlocal debug_log_widget
+        if debug_log_widget is None:
+            return
+        timestamp = format_timestamp(time.time())
+        debug_log_widget.configure(state="normal")
+        debug_log_widget.insert(tk.END, f"{timestamp} - {message}\n")
+        debug_log_widget.see(tk.END)
+        debug_log_widget.configure(state="disabled")
+
+    def on_debug_click(event: tk.Event[tk.Misc]) -> None:
+        append_debug_log(f"[클릭] ({int(event.x_root)}, {int(event.y_root)})")
+
+    def on_debug_key(event: tk.Event[tk.Misc]) -> None:
+        append_debug_log(f"[키 입력] {event.keysym}")
+
+    def close_debug_window() -> None:
+        nonlocal debug_window, debug_log_widget
+        if debug_window is not None:
+            debug_window.destroy()
+        debug_window = None
+        debug_log_widget = None
+
+    def show_debug_window() -> None:
+        nonlocal debug_window, debug_log_widget
+        if debug_window is not None and tk.Toplevel.winfo_exists(debug_window):
+            debug_window.lift()
+            debug_window.focus_force()
+            return
+
+        debug_window = tk.Toplevel(root)
+        debug_window.title("디버깅")
+        debug_window.geometry("400x300")
+        debug_window.resizable(True, True)
+
+        info_label = tk.Label(
+            debug_window,
+            text="클릭 및 키보드 입력 기록 (ms 단위)",
+            anchor="w",
+        )
+        info_label.pack(fill="x", padx=8, pady=(8, 4))
+
+        log_frame = tk.Frame(debug_window)
+        log_frame.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+        debug_log_widget = tk.Text(log_frame, state="disabled", height=10)
+        debug_log_widget.pack(side="left", fill="both", expand=True)
+        log_scroll = tk.Scrollbar(log_frame, command=debug_log_widget.yview)
+        log_scroll.pack(side="right", fill="y")
+        debug_log_widget.configure(yscrollcommand=log_scroll.set)
+
+        debug_window.bind("<Button>", on_debug_click)
+        debug_window.bind("<Key>", on_debug_key)
+        debug_window.protocol("WM_DELETE_WINDOW", close_debug_window)
+        debug_window.focus_force()
+
     button_frame = tk.Frame(root)
     button_frame.pack(pady=10)
 
@@ -247,6 +305,9 @@ def build_gui() -> None:
 
     reset_button = tk.Button(button_frame, text="다시 (F2)", width=12, command=controller.reset_and_run_first)
     reset_button.pack(side="left", padx=5)
+
+    debug_button = tk.Button(button_frame, text="디버깅", width=12, command=show_debug_window)
+    debug_button.pack(side="left", padx=5)
 
     delay_frame = tk.LabelFrame(root, text="딜레이 설정")
     delay_frame.pack(fill="x", padx=10, pady=(0, 10))
@@ -270,6 +331,7 @@ def build_gui() -> None:
         channel_wait_window_var,
         "Channel 문자열 감지 간 허용 대기 시간입니다.",
     )
+
     status_label = tk.Label(root, textvariable=status_var, fg="#006400")
     status_label.pack(pady=(0, 4))
 
