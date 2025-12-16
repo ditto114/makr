@@ -554,7 +554,49 @@ def build_gui() -> None:
 
         @staticmethod
         def _normalize(text: str) -> str:
-            return re.sub(r"[^A-Za-z0-9가-힣]+", "", text)
+            base = re.sub(r"[^A-Za-z0-9가-힣]+", "", text)
+
+            digits_to_remove: list[int] = []
+            search_from = 0
+            base_len = len(base)
+            anchor_sequence = [f"{i}PopWorldId" for i in range(1, 10)]
+
+            while True:
+                start_idx = base.find(anchor_sequence[0], search_from)
+                if start_idx == -1:
+                    break
+
+                positions = [start_idx]
+                prev_end = start_idx + len(anchor_sequence[0])
+                success = True
+
+                for seq in anchor_sequence[1:]:
+                    window_limit = prev_end + 50
+                    search_end = min(base_len, window_limit + len(seq))
+                    found_idx = base.find(seq, prev_end, search_end)
+
+                    if found_idx == -1 or found_idx > window_limit:
+                        success = False
+                        break
+
+                    positions.append(found_idx)
+                    prev_end = found_idx + len(seq)
+
+                if success:
+                    digits_to_remove.extend(positions)
+                    search_from = prev_end
+                else:
+                    search_from = start_idx + 1
+
+            if not digits_to_remove:
+                return base
+
+            chars = list(base)
+            for idx in sorted(digits_to_remove, reverse=True):
+                if 0 <= idx < len(chars):
+                    del chars[idx]
+
+            return "".join(chars)
 
         def feed(self, text: str) -> None:
             normalized = self._normalize(text)
@@ -612,7 +654,9 @@ def build_gui() -> None:
             return False
 
         def _capture_segment(self) -> None:
-            end_idx = self._last_anchor_idx + len(self.anchor_keyword)
+            end_idx = min(
+                len(self._buffer), self._last_anchor_idx + len(self.anchor_keyword) + 10
+            )
             if self._found_followup:
                 capture = self._buffer[self._start_idx:end_idx]
                 self._on_capture(capture)
