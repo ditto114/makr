@@ -239,41 +239,6 @@ def build_gui() -> None:
         step_transition_delay_provider=get_step_transition_delay_ms,
     )
 
-    button_frame = tk.Frame(root)
-    button_frame.pack(pady=10)
-
-    run_button = tk.Button(button_frame, text="실행 (F1)", width=12, command=controller.run_step)
-    run_button.pack(side="left", padx=5)
-
-    reset_button = tk.Button(button_frame, text="다시 (F2)", width=12, command=controller.reset_and_run_first)
-    reset_button.pack(side="left", padx=5)
-
-    debug_button = tk.Button(button_frame, text="디버깅", width=12, command=show_debug_window)
-    debug_button.pack(side="left", padx=5)
-
-    delay_frame = tk.LabelFrame(root, text="딜레이 설정")
-    delay_frame.pack(fill="x", padx=10, pady=(0, 10))
-
-    def add_delay_input(label: str, var: tk.StringVar, description: str) -> None:
-        row = tk.Frame(delay_frame)
-        row.pack(fill="x", pady=3)
-
-        tk.Label(row, text=label, width=18, anchor="w").pack(side="left")
-        tk.Entry(row, textvariable=var, width=8).pack(side="left", padx=(0, 6))
-        tk.Label(row, text=description).pack(side="left")
-
-    add_delay_input("1단계 클릭 간 (ms)", click_delay_var, "pos1 → pos2 클릭 사이 지연입니다.")
-    add_delay_input(
-        "1→2단계 전환 (ms)",
-        step_transition_delay_var,
-        "반복 실행 시 1단계 후 2단계로 넘어가기 전 대기 시간입니다.",
-    )
-    add_delay_input(
-        "채널 감지 대기 (ms)",
-        channel_wait_window_var,
-        "Channel 문자열 감지 간 허용 대기 시간입니다.",
-    )
-
     debug_window: tk.Toplevel | None = None
     debug_log_widget: tk.Text | None = None
 
@@ -331,6 +296,41 @@ def build_gui() -> None:
         debug_window.bind("<Key>", on_debug_key)
         debug_window.protocol("WM_DELETE_WINDOW", close_debug_window)
         debug_window.focus_force()
+
+    button_frame = tk.Frame(root)
+    button_frame.pack(pady=10)
+
+    run_button = tk.Button(button_frame, text="실행 (F1)", width=12, command=controller.run_step)
+    run_button.pack(side="left", padx=5)
+
+    reset_button = tk.Button(button_frame, text="다시 (F2)", width=12, command=controller.reset_and_run_first)
+    reset_button.pack(side="left", padx=5)
+
+    debug_button = tk.Button(button_frame, text="디버깅", width=12, command=show_debug_window)
+    debug_button.pack(side="left", padx=5)
+
+    delay_frame = tk.LabelFrame(root, text="딜레이 설정")
+    delay_frame.pack(fill="x", padx=10, pady=(0, 10))
+
+    def add_delay_input(label: str, var: tk.StringVar, description: str) -> None:
+        row = tk.Frame(delay_frame)
+        row.pack(fill="x", pady=3)
+
+        tk.Label(row, text=label, width=18, anchor="w").pack(side="left")
+        tk.Entry(row, textvariable=var, width=8).pack(side="left", padx=(0, 6))
+        tk.Label(row, text=description).pack(side="left")
+
+    add_delay_input("1단계 클릭 간 (ms)", click_delay_var, "pos1 → pos2 클릭 사이 지연입니다.")
+    add_delay_input(
+        "1→2단계 전환 (ms)",
+        step_transition_delay_var,
+        "반복 실행 시 1단계 후 2단계로 넘어가기 전 대기 시간입니다.",
+    )
+    add_delay_input(
+        "채널 감지 대기 (ms)",
+        channel_wait_window_var,
+        "Channel 문자열 감지 간 허용 대기 시간입니다.",
+    )
 
     status_label = tk.Label(root, textvariable=status_var, fg="#006400")
     status_label.pack(pady=(0, 4))
