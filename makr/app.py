@@ -570,11 +570,13 @@ def build_gui() -> None:
                 if self._active:
                     search_limit = min(len(self._buffer), 100)
                     limited = self._buffer[:search_limit]
-                    next_idx = limited.find("Channel", len("Channel"))
-                    if next_idx != -1:
-                        capture = self._buffer[: next_idx + len("Channel")]
+                    channel_positions = [m.start() for m in re.finditer("Channel", limited)]
+
+                    if len(channel_positions) >= 2:
+                        last_idx = channel_positions[-1] + len("Channel")
+                        capture = self._buffer[:last_idx]
                         self._on_capture(capture)
-                        remaining = self._buffer[next_idx + len("Channel") :]
+                        remaining = self._buffer[last_idx:]
                         self._buffer = ""
                         self._active = False
                         if remaining:
@@ -1034,8 +1036,9 @@ def build_gui() -> None:
         info_label = ttk.Label(
             test_window,
             text=(
-                "Channel 문자열이 감지되면 다음 Channel 까지 정규화된 문자열을 "
-                "기록합니다 (100자 범위 내)."
+                "Channel 문자열이 감지되면 정규화된 문자열 기준 100자 이내에서 다음 "
+                "Channel 을 찾고, 같은 범위에서 이어지는 Channel 이 없을 때까지 "
+                "기록합니다."
             ),
             wraplength=480,
             justify="left",
