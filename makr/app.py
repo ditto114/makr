@@ -4,6 +4,8 @@ macOS에서 최상단에 고정된 창을 제공하며, 실행/다시 버튼으�
 순차 동작을 제어합니다.
 """
 
+from __future__ import annotations
+
 import json
 import re
 import threading
@@ -54,7 +56,11 @@ class MacroController:
         self.current_step = 1
         self.click_delay_provider = click_delay_provider
         self.step_transition_delay_provider = step_transition_delay_provider
+        self.input_logger: MacroInputLogger | None = None
         self._update_status()
+
+    def set_input_logger(self, logger: "MacroInputLogger | None") -> None:
+        self.input_logger = logger
 
     def _update_status(self) -> None:
         self.status_var.set(f"다음 실행 단계: {self.current_step}단계")
@@ -69,9 +75,16 @@ class MacroController:
             return None
         return x_val, y_val
 
-    def _click_point(self, point: tuple[int, int]) -> None:
+    def _click_point(self, point: tuple[int, int], *, label: str | None = None) -> None:
         x_val, y_val = point
         pyautogui.click(x_val, y_val)
+        if self.input_logger:
+            self.input_logger.record_click(label or "클릭", point)
+
+    def _press_key(self, key: str, *, label: str | None = None) -> None:
+        pyautogui.press(key)
+        if self.input_logger:
+            self.input_logger.record_key(label or key, key)
 
     def _delay_seconds(self, delay_ms: int) -> float:
         return max(delay_ms, 0) / 1000
@@ -88,7 +101,7 @@ class MacroController:
 
     def reset_and_run_first(self, *, newline_mode: bool = False) -> None:
         """다시 버튼 콜백: Esc 입력 후 1단계를 재실행."""
-        pyautogui.press("esc")
+        self._press_key("esc", label="초기화 ESC")
         self.current_step = 1
         self._update_status()
         self._run_step_one()
@@ -100,11 +113,11 @@ class MacroController:
         pos2 = self._get_point("pos2")
         if pos1 is None or pos2 is None:
             return
-        self._click_point(pos1)
+        self._click_point(pos1, label="1단계 pos1")
         click_delay_sec = self._delay_seconds(self.click_delay_provider())
         if click_delay_sec:
             time.sleep(click_delay_sec)
-        self._click_point(pos2)
+        self._click_point(pos2, label="1단계 pos2")
 
     def _run_step_two(self, *, newline_mode: bool = False) -> None:
         pos3 = self._get_point("pos3")
@@ -114,10 +127,10 @@ class MacroController:
             pos4 = self._get_point("pos4")
             if pos4 is None:
                 return
-            self._click_point(pos4)
+            self._click_point(pos4, label="2단계 pos4")
             time.sleep(self._delay_seconds(30))
-        self._click_point(pos3)
-        pyautogui.press("enter")
+        self._click_point(pos3, label="2단계 pos3")
+        self._press_key("enter", label="2단계 Enter")
 
 
 def build_gui() -> None:
@@ -260,52 +273,42 @@ def build_gui() -> None:
 
         root.after(0, _write_log)
 
-    class InputDebugRecorder:
+    class MacroInputLogger:
         def __init__(self, log_callback: Callable[[str], None]) -> None:
             self._log_callback = log_callback
-            self._mouse_listener: mouse.Listener | None = None
-            self._keyboard_listener: keyboard.Listener | None = None
+            self._start_ms: float | None = None
             self._lock = threading.Lock()
 
         def start(self) -> None:
             with self._lock:
-                if self._mouse_listener is not None or self._keyboard_listener is not None:
-                    return
-                self._mouse_listener = mouse.Listener(on_click=self._on_mouse_click)
-                self._keyboard_listener = keyboard.Listener(
-                    on_press=self._on_key_press, on_release=self._on_key_release
-                )
-                self._mouse_listener.start()
-                self._keyboard_listener.start()
+                self._start_ms = time.perf_counter() * 1000
 
         def stop(self) -> None:
             with self._lock:
-                if self._mouse_listener is not None:
-                    self._mouse_listener.stop()
-                if self._keyboard_listener is not None:
-                    self._keyboard_listener.stop()
-                self._mouse_listener = None
-                self._keyboard_listener = None
+                self._start_ms = None
 
-        def _on_mouse_click(
-            self, x: float, y: float, button: mouse.Button, pressed: bool
-        ) -> bool:
-            action = "누름" if pressed else "뗌"
+        def _elapsed_ms(self) -> int | None:
+            with self._lock:
+                if self._start_ms is None:
+                    return None
+                return int(time.perf_counter() * 1000 - self._start_ms)
+
+        def record_click(self, label: str, point: tuple[int, int]) -> None:
+            elapsed = self._elapsed_ms()
+            if elapsed is None:
+                return
+            x_val, y_val = point
             self._log_callback(
-                f"[마우스 {action}] {button.name if hasattr(button, 'name') else button} "
-                f"({int(x)}, {int(y)})"
+                f"[자동 입력] {label}: {elapsed}ms (클릭 {x_val}, {y_val})"
             )
-            return True
 
-        def _on_key_press(self, key: keyboard.Key | keyboard.KeyCode) -> None:
-            key_name = getattr(key, "char", None) or str(key)
-            self._log_callback(f"[키 입력] {key_name}")
+        def record_key(self, label: str, key: str) -> None:
+            elapsed = self._elapsed_ms()
+            if elapsed is None:
+                return
+            self._log_callback(f"[자동 입력] {label}: {elapsed}ms (키 {key})")
 
-        def _on_key_release(self, key: keyboard.Key | keyboard.KeyCode) -> None:
-            key_name = getattr(key, "char", None) or str(key)
-            self._log_callback(f"[키 해제] {key_name}")
-
-    debug_recorder = InputDebugRecorder(append_debug_log)
+    debug_recorder = MacroInputLogger(append_debug_log)
 
     def close_debug_window() -> None:
         nonlocal debug_window, debug_log_widget
@@ -648,6 +651,7 @@ def build_gui() -> None:
             self.running = True
             self._clear_queue()
             self.newline_mode = newline_mode
+            controller.set_input_logger(debug_recorder)
             debug_recorder.start()
             append_debug_log("F3 매크로 시작")
             threading.Thread(target=self._run_sequence, daemon=True).start()
@@ -656,6 +660,7 @@ def build_gui() -> None:
             self.running = False
             self._clear_queue()
             debug_recorder.stop()
+            controller.set_input_logger(None)
             append_debug_log("F3 매크로 중단")
 
         def notify_channel_packet(self, new_channel_logged: bool) -> None:
@@ -766,6 +771,7 @@ def build_gui() -> None:
                 self.running = False
                 self._run_on_main(controller._update_status)
                 debug_recorder.stop()
+                controller.set_input_logger(None)
                 append_debug_log("F3 매크로 종료")
 
         def _delay_seconds(self, delay_ms: int) -> float:
