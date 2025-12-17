@@ -554,63 +554,7 @@ def build_gui() -> None:
 
         @staticmethod
         def _normalize(text: str) -> str:
-            base = re.sub(r"[^A-Za-z0-9가-힣]+", "", text)
-
-            digits_to_remove: list[int] = []
-            search_from = 0
-            base_len = len(base)
-            anchor_sequence = [f"{i}PopWorldId" for i in range(0, 10)]
-            anchor_len = len(anchor_sequence[0])
-
-            while True:
-                start_idx = base.find(anchor_sequence[0], search_from)
-                if start_idx == -1:
-                    break
-
-                positions = [start_idx]
-                prev_end = start_idx + anchor_len
-                success = True
-
-                for seq in anchor_sequence[1:]:
-                    window_limit = prev_end + 50
-                    search_end = min(base_len, window_limit + len(seq))
-                    found_idx = base.find(seq, prev_end, search_end)
-
-                    if found_idx == -1 or found_idx > window_limit:
-                        success = False
-                        break
-
-                    positions.append(found_idx)
-                    prev_end = found_idx + len(seq)
-
-                if success:
-                    prefixes: list[str] = []
-
-                    for pos in positions:
-                        prefix_idx = pos - 1
-                        if prefix_idx < 0:
-                            success = False
-                            break
-                        prefixes.append(base[prefix_idx])
-
-                    if success:
-                        prefix_counter = Counter(prefixes)
-                        most_common_count = prefix_counter.most_common(1)[0][1]
-
-                        if most_common_count < 7:
-                            digits_to_remove.extend(positions)
-
-                search_from = start_idx + 1 if not success else start_idx + anchor_len
-
-            if not digits_to_remove:
-                return base
-
-            chars = list(base)
-            for idx in sorted(digits_to_remove, reverse=True):
-                if 0 <= idx < len(chars):
-                    del chars[idx]
-
-            return "".join(chars)
+            return re.sub(r"[^A-Za-z0-9가-힣]", "-", text)
 
         def feed(self, text: str) -> None:
             normalized = self._normalize(text)
