@@ -533,6 +533,8 @@ def build_gui() -> None:
     test_detail_text: tk.Text | None = None
     test_pattern_table: ttk.Treeview | None = None
     test_records: list[tuple[str, str, str | None, str, list[list[str]]]] = []
+    test_channel_names: list[str] = []
+    test_channel_name_set: set[str] = set()
     pattern_table_regex = re.compile(r"[A-Z][가-힣]\d{2,3}")
 
     def format_timestamp(ts: float) -> str:
@@ -990,16 +992,15 @@ def build_gui() -> None:
 
         channel_info_window.protocol("WM_DELETE_WINDOW", on_close_channel_window)
 
-    def build_pattern_table(text: str) -> tuple[str | None, list[list[str]]]:
-        matches = pattern_table_regex.findall(text)
-        if not matches:
+    def build_pattern_table(names: list[str]) -> tuple[str | None, list[list[str]]]:
+        if not names:
             return None, []
 
-        col_width = max(len(match) for match in matches)
+        col_width = max(len(match) for match in names)
         rows_for_view: list[list[str]] = []
         formatted_rows: list[str] = []
-        for idx in range(0, len(matches), 6):
-            chunk = matches[idx : idx + 6]
+        for idx in range(0, len(names), 6):
+            chunk = names[idx : idx + 6]
             padded = chunk + [""] * (6 - len(chunk))
             rows_for_view.append(padded)
             formatted_rows.append(
@@ -1008,12 +1009,14 @@ def build_gui() -> None:
 
         return "\n".join(formatted_rows), rows_for_view
 
-    def update_pattern_table(rows: list[list[str]] | None = None) -> None:
+    def update_pattern_table() -> None:
         if test_pattern_table is None:
             return
 
         for item in test_pattern_table.get_children():
             test_pattern_table.delete(item)
+
+        _, rows = build_pattern_table(test_channel_names)
 
         if not rows:
             test_pattern_table.insert("", "end", values=("(없음)", "", "", "", "", ""))
@@ -1024,8 +1027,17 @@ def build_gui() -> None:
             test_pattern_table.insert("", "end", values=padded)
 
     def add_test_record(content: str) -> None:
+        matches = pattern_table_regex.findall(content)
+        new_names = [name for name in matches if name not in test_channel_name_set]
+        if not new_names:
+            return
+
+        for name in new_names:
+            test_channel_name_set.add(name)
+            test_channel_names.append(name)
+
         timestamp = format_timestamp(time.time())
-        table_text, table_rows = build_pattern_table(content)
+        table_text, table_rows = build_pattern_table(test_channel_names)
         display_content = (
             f"{content}\n\n[추출된 패턴]\n{table_text}"
             if table_text
@@ -1037,7 +1049,7 @@ def build_gui() -> None:
             item_id = test_treeview.insert("", "end", values=(index, timestamp, display_content))
             test_treeview.selection_set(item_id)
             update_test_detail(index)
-            update_pattern_table(table_rows)
+            update_pattern_table()
 
     def update_test_detail(selected_index: int | None = None) -> None:
         if test_detail_text is None:
@@ -1048,13 +1060,14 @@ def build_gui() -> None:
 
         if selected_index is None or selected_index < 1 or selected_index > len(test_records):
             test_detail_text.insert("1.0", "기록을 선택하세요.")
-            update_pattern_table(None)
+            update_pattern_table()
         else:
-            _, content, table_text, _, table_rows = test_records[selected_index - 1]
+            _, content, table_text, _, _ = test_records[selected_index - 1]
             patterns = table_text or "(없음)"
             detail_text = f"{content}\n\n[추출된 패턴]\n{patterns}"
             test_detail_text.insert("1.0", detail_text)
-            update_pattern_table(table_rows)
+
+        update_pattern_table()
 
         test_detail_text.configure(state="disabled")
 
@@ -1068,9 +1081,11 @@ def build_gui() -> None:
         update_test_detail(test_records and 1 or None)
 
     def clear_test_records() -> None:
+        test_channel_names.clear()
+        test_channel_name_set.clear()
         test_records.clear()
         refresh_test_treeview()
-        update_pattern_table(None)
+        update_pattern_table()
         status_var.set("테스트 기록이 초기화되었습니다.")
 
     def show_test_window() -> None:
