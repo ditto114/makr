@@ -16,3 +16,11 @@
 4. 창이 항상 최상단에 유지된 상태에서 `실행` 또는 `다시` 버튼을 눌러 동작을 제어합니다.
 
 > pyautogui의 마우스/키보드 제어를 허용하도록 macOS 보안 설정(손쉬운 사용)을 승인해야 합니다.
+
+## 성능 테스트 도구
+테스트 과정에서 병목 지점을 빠르게 파악하려면 내장 프로파일러 CLI를 사용하세요.
+
+- 모듈 실행 프로파일링: `python -m makr.perf_tool --module makr.packet --limit 30 --threshold-ms 1 --output perf_report.txt`
+- 스크립트 파일 프로파일링: `python -m makr.perf_tool --script path/to/script.py -- perf_target_args`
+
+보고서는 `perf_report.txt`에 기록되며, `--stats-file` 옵션으로 pstats 바이너리를 추가 저장해 다른 시각화 도구에서 열 수 있습니다.
