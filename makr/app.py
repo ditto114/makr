@@ -546,11 +546,7 @@ def build_gui() -> None:
         def __init__(self, on_capture: Callable[[str], None]) -> None:
             self._on_capture = on_capture
             self._buffer = ""
-            self._active = False
-            self._start_idx = 0
-            self._last_anchor_idx = 0
-            self._scan_start_idx = 0
-            self._found_followup = False
+            self._pattern = re.compile(r"[A-Z]-[가-힣]\d{2,3}-")
 
         @staticmethod
         def _normalize(text: str) -> str:
@@ -560,71 +556,29 @@ def build_gui() -> None:
             normalized = self._normalize(text)
             if not normalized:
                 return
-            self._process(normalized)
-
-        def _process(self, normalized: str) -> None:
             self._buffer += normalized
+            self._process_buffer()
 
+        def _process_buffer(self) -> None:
             while True:
-                if not self._active:
-                    if not self._activate_from_buffer():
-                        break
+                anchor_idx = self._buffer.find(self.anchor_keyword)
+                if anchor_idx == -1:
+                    # 불필요한 데이터가 과도하게 쌓이지 않도록 끝부분만 유지
+                    self._buffer = self._buffer[-len(self.anchor_keyword) :]
+                    return
 
-                if not self._scan_active_segment():
-                    break
+                search_start = anchor_idx + len(self.anchor_keyword)
+                match = self._pattern.search(self._buffer, pos=search_start)
+                if match is None:
+                    # 앵커부터의 문자열만 유지하여 다음 입력을 기다림
+                    self._buffer = self._buffer[anchor_idx:]
+                    return
 
-        def _activate_from_buffer(self) -> bool:
-            channel_idx = self._buffer.find(self.anchor_keyword)
-            if channel_idx == -1:
-                return False
+                captured = match.group(0).replace("-", "")
+                self._on_capture(captured)
 
-            if channel_idx > 0:
-                self._buffer = self._buffer[channel_idx:]
-                channel_idx = 0
-
-            self._active = True
-            self._start_idx = channel_idx
-            self._last_anchor_idx = channel_idx
-            self._scan_start_idx = channel_idx + len(self.anchor_keyword)
-            self._found_followup = False
-            return True
-
-        def _scan_active_segment(self) -> bool:
-            while self._active:
-                window_limit = self._last_anchor_idx + 100
-                next_idx = self._buffer.find(self.anchor_keyword, self._scan_start_idx)
-
-                if next_idx != -1 and next_idx <= window_limit:
-                    self._last_anchor_idx = next_idx
-                    self._scan_start_idx = next_idx + len(self.anchor_keyword)
-                    self._found_followup = True
-                    continue
-
-                has_surpassed_window = len(self._buffer) > window_limit
-                next_is_beyond_window = next_idx != -1 and next_idx > window_limit
-
-                if not has_surpassed_window and not next_is_beyond_window:
-                    return False
-
-                self._capture_segment()
-                return True
-
-            return False
-
-        def _capture_segment(self) -> None:
-            end_idx = min(
-                len(self._buffer), self._last_anchor_idx + len(self.anchor_keyword) + 10
-            )
-            if self._found_followup:
-                capture = self._buffer[self._start_idx:end_idx]
-                self._on_capture(capture)
-
-            self._buffer = self._buffer[end_idx:]
-            self._active = False
-            self._start_idx = 0
-            self._last_anchor_idx = 0
-            self._scan_start_idx = 0
-            self._found_followup = False
+                # 매칭된 구간 이후 데이터를 유지하여 추가 탐색
+                self._buffer = self._buffer[match.end() :]
 
     def append_packet_group(
         timestamp_sec: float, payloads: list[str], *, label_prefix: str | None = None
@@ -1135,10 +1089,9 @@ def build_gui() -> None:
         info_label = ttk.Label(
             test_window,
             text=(
-                "ChannelName 문자열이 감지되면 해당 ChannelName으로부터 정규화된 기준 100자 "
-                "내에서 다음 ChannelName을 찾고, 발견된 ChannelName을 새 기준점으로 삼아 "
-                "동일한 방식으로 반복 탐색하여 더 이상 ChannelName이 없을 때까지 "
-                "기록합니다."
+                "ChannelName이 포함된 패킷을 정규화한 뒤, 다음 [A-가00- 또는 A-가000-] "
+                "형태가 나타날 때까지 기록하고 해당 문자열에서 하이픈(-)을 제거해 "
+                "추출합니다."
             ),
             wraplength=480,
             justify="left",
