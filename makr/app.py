@@ -11,7 +11,6 @@ import re
 import threading
 import time
 import tkinter as tk
-from collections import Counter, deque
 from dataclasses import dataclass
 from queue import Empty, Queue
 from pathlib import Path
@@ -173,7 +172,6 @@ def build_gui() -> None:
     f2_before_pos2_var = tk.StringVar(
         value=str(saved_state.get("delay_f2_before_pos2_ms", saved_state.get("click_delay_ms", "100")))
     )
-    channel_wait_window_var = tk.StringVar(value=str(saved_state.get("channel_wait_window_ms", "500")))
     f1_before_pos3_var = tk.StringVar(value=str(saved_state.get("delay_f1_before_pos3_ms", "0")))
     f1_before_enter_var = tk.StringVar(value=str(saved_state.get("delay_f1_before_enter_ms", "0")))
     f1_newline_before_pos4_var = tk.StringVar(
@@ -185,24 +183,15 @@ def build_gui() -> None:
     f1_newline_before_enter_var = tk.StringVar(
         value=str(saved_state.get("delay_f1_newline_before_enter_ms", "0"))
     )
-    packet_limit_var = tk.StringVar(value=str(saved_state.get("packet_limit", "200")))
-    packet_status_var = tk.StringVar(value="패킷 캡쳐 중지됨")
-    newline_var = tk.BooleanVar(value=bool(saved_state.get("newline_after_pos2", False)))
-    three_digit_channel_var = tk.BooleanVar(
-        value=bool(saved_state.get("detect_three_digit_channel", False))
+    channel_watch_interval_var = tk.StringVar(
+        value=str(saved_state.get("channel_watch_interval_ms", "200"))
     )
-    channel_names: set[str] = set(saved_state.get("channel_names", []))
+    channel_timeout_var = tk.StringVar(value=str(saved_state.get("channel_timeout_ms", "5000")))
+    newline_var = tk.BooleanVar(value=bool(saved_state.get("newline_after_pos2", False)))
 
     entries: dict[str, tuple[tk.Entry, tk.Entry]] = {}
-    packet_queue: deque[tuple[int, str]] = deque()
-    packet_queue_lock = threading.Lock()
-    packet_flush_job: str | None = None
     capture_listener: mouse.Listener | None = None
     hotkey_listener: keyboard.Listener | None = None
-    packet_manager = PacketCaptureManager(
-        on_packet=lambda text: enqueue_packet_text(text),
-        on_error=lambda msg: root.after(0, messagebox.showerror, "패킷 캡쳐 오류", msg),
-    )
 
     def _parse_delay_ms(var: tk.StringVar, label: str, fallback: int) -> int:
         try:
@@ -219,8 +208,11 @@ def build_gui() -> None:
     def _make_delay_getter(var: tk.StringVar, label: str, fallback: int) -> Callable[[], int]:
         return lambda: _parse_delay_ms(var, label, fallback)
 
-    def get_channel_wait_window_ms() -> int:
-        return _parse_delay_ms(channel_wait_window_var, "채널 감지 대기", 500)
+    def get_channel_watch_interval_ms() -> int:
+        return _parse_delay_ms(channel_watch_interval_var, "채널 감시 주기", 200)
+
+    def get_channel_timeout_ms() -> int:
+        return _parse_delay_ms(channel_timeout_var, "채널 타임아웃", 5000)
 
     def add_coordinate_row(label_text: str, key: str) -> None:
         frame = tk.Frame(root)
@@ -271,9 +263,6 @@ def build_gui() -> None:
 
     top_bar = tk.Frame(root)
     top_bar.pack(fill="x", pady=(6, 0))
-    tk.Checkbutton(top_bar, text="3글자만 탐지", variable=three_digit_channel_var).pack(
-        side="right", padx=(0, 12)
-    )
     tk.Checkbutton(top_bar, text="줄바꿈", variable=newline_var).pack(side="right", padx=(0, 12))
 
     tk.Label(root, text="좌표는 화면 기준 픽셀 단위로 입력하세요 (X, Y).", fg="#444").pack(pady=(6, 0))
@@ -449,7 +438,8 @@ def build_gui() -> None:
             (f2_before_pos2_var, "pos2"),
         ],
     )
-    add_single_delay_row("채널감지대기", channel_wait_window_var, "ms (기본 500)")
+    add_single_delay_row("채널감시주기", channel_watch_interval_var, "ms (기본 200)")
+    add_single_delay_row("채널타임아웃", channel_timeout_var, "ms (기본 5000)")
     add_step_delay_row(
         "(F1-1)",
         [
@@ -468,65 +458,6 @@ def build_gui() -> None:
 
     status_label = tk.Label(root, textvariable=status_var, fg="#006400")
     status_label.pack(pady=(0, 4))
-
-    alert_frame = ttk.Frame(root)
-    alert_frame.pack(fill="x", padx=10, pady=(0, 10))
-    alert_frame.columnconfigure(0, weight=1)
-    alert_frame.columnconfigure(1, weight=1)
-
-    channel_alert_var = tk.StringVar()
-    channel_packet_alert_var = tk.StringVar()
-
-    ttk.Label(alert_frame, textvariable=channel_alert_var, anchor="w", foreground="#0a5").grid(
-        row=0, column=0, sticky="w"
-    )
-    ttk.Label(alert_frame, textvariable=channel_packet_alert_var, anchor="e", foreground="#05a").grid(
-        row=0, column=1, sticky="e"
-    )
-
-    packet_frame = ttk.LabelFrame(root, text="패킷 캡쳐")
-    packet_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
-    packet_frame.columnconfigure(0, weight=1)
-    packet_frame.rowconfigure(4, weight=1)
-
-    packet_status_label = ttk.Label(packet_frame, textvariable=packet_status_var, foreground="#0a5")
-    packet_status_label.grid(row=0, column=0, columnspan=3, sticky="w", padx=8, pady=(8, 4))
-
-    ttk.Label(packet_frame, text="포트").grid(row=1, column=0, sticky="w", padx=8)
-    packet_port_var = tk.StringVar(value=str(saved_state.get("packet_port", "32800")))
-    packet_port_entry = ttk.Entry(packet_frame, textvariable=packet_port_var, width=10)
-    packet_port_entry.grid(row=1, column=1, sticky="w")
-
-    packet_control_frame = ttk.Frame(packet_frame)
-    packet_control_frame.grid(row=1, column=2, sticky="e", padx=8)
-    start_capture_btn = ttk.Button(packet_control_frame, text="캡쳐 시작")
-    stop_capture_btn = ttk.Button(packet_control_frame, text="캡쳐 중지", state="disabled")
-    start_capture_btn.grid(row=0, column=0, padx=2)
-    stop_capture_btn.grid(row=0, column=1, padx=2)
-
-    retention_frame = ttk.Frame(packet_frame)
-    retention_frame.grid(row=2, column=0, columnspan=2, sticky="w", padx=8, pady=(6, 0))
-    ttk.Label(retention_frame, text="보관 패킷 수").pack(side="left")
-    packet_limit_entry = ttk.Entry(retention_frame, textvariable=packet_limit_var, width=8)
-    packet_limit_entry.pack(side="left", padx=(4, 10))
-
-    channel_info_btn = ttk.Button(retention_frame, text="채널정보")
-    channel_info_btn.pack(side="left")
-
-    packet_tree = ttk.Treeview(packet_frame, columns=("payload",), show="tree", height=10)
-    packet_tree.grid(row=4, column=0, columnspan=3, sticky="nsew", padx=8, pady=8)
-    packet_tree_scroll = ttk.Scrollbar(packet_frame, orient="vertical", command=packet_tree.yview)
-    packet_tree.configure(yscrollcommand=packet_tree_scroll.set)
-    packet_tree_scroll.grid(row=4, column=3, sticky="ns", pady=8)
-
-    packet_counter = 0
-    packet_items: deque[str] = deque()
-    channel_info_window: tk.Toplevel | None = None
-    channel_treeview: ttk.Treeview | None = None
-    channel_name_patterns = {
-        "flex": re.compile(r"[A-Z]-[가-힣]\d{2,3}"),
-        "strict": re.compile(r"[A-Z]-[가-힣]\d{3}"),
-    }
 
     test_window: tk.Toplevel | None = None
     test_treeview: ttk.Treeview | None = None
@@ -582,82 +513,6 @@ def build_gui() -> None:
                 # 매칭된 구간 이후 데이터를 유지하여 추가 탐색
                 self._buffer = self._buffer[match.end() :]
 
-    def append_packet_group(
-        timestamp_sec: float, payloads: list[str], *, label_prefix: str | None = None
-    ) -> None:
-        nonlocal packet_counter
-
-        def _summary_text(text: str) -> str:
-            first_line = text.splitlines()[0] if text.strip() else "(내용 없음)"
-            return (first_line[:80] + "…") if len(first_line) > 80 else first_line
-
-        packet_counter += 1
-        prefix = f"{label_prefix} " if label_prefix else ""
-        parent_label = f"{packet_counter}. {prefix}{format_timestamp(timestamp_sec)} ({len(payloads)}개)"
-        parent_id = packet_tree.insert("", "end", text=parent_label, open=False)
-
-        for payload in payloads:
-            summary_id = packet_tree.insert(parent_id, "end", text=_summary_text(payload), open=False)
-            for line in payload.splitlines():
-                packet_tree.insert(summary_id, "end", text=line if line else "(빈 줄)")
-
-        packet_items.append(parent_id)
-        _trim_packet_items()
-        packet_tree.see(parent_id)
-
-    def get_packet_limit() -> int:
-        try:
-            limit = int(float(packet_limit_var.get()))
-        except (tk.TclError, ValueError):
-            messagebox.showerror("보관 패킷 수", "보관할 패킷 수를 숫자로 입력하세요.")
-            limit = 200
-        if limit < 1:
-            messagebox.showerror("보관 패킷 수", "최소 1개 이상 보관해야 합니다.")
-            limit = 1
-        packet_limit_var.set(str(limit))
-        return limit
-
-    def _trim_packet_items() -> None:
-        max_packets = get_packet_limit()
-        while len(packet_items) > max_packets:
-            oldest_id = packet_items.popleft()
-            packet_tree.delete(oldest_id)
-
-    def flush_packet_queue() -> None:
-        nonlocal packet_flush_job
-        with packet_queue_lock:
-            if not packet_queue:
-                packet_flush_job = None
-                return
-            batch = list(packet_queue)
-            packet_queue.clear()
-            packet_flush_job = None
-
-        grouped_payloads: dict[float, list[str]] = {}
-        for timestamp_sec, payload in batch:
-            grouped_payloads.setdefault(timestamp_sec, []).append(payload)
-
-        for timestamp_sec, payloads in grouped_payloads.items():
-            append_packet_group(timestamp_sec, payloads)
-
-    def schedule_packet_flush() -> None:
-        nonlocal packet_flush_job
-        if packet_flush_job is not None:
-            return
-        packet_flush_job = root.after(200, flush_packet_queue)
-
-    def process_packet_detection(text: str) -> None:
-        new_channel_logged = detect_channel_names(text)
-        detect_channel_packet(text, new_channel_logged)
-        channel_segment_recorder.feed(text)
-
-    def enqueue_packet_text(text: str) -> None:
-        timestamp_sec = int(time.time())
-        with packet_queue_lock:
-            packet_queue.append((timestamp_sec, text))
-        root.after(0, schedule_packet_flush)
-        root.after(0, process_packet_detection, text)
-
     def collect_app_state() -> dict:
         coordinates: dict[str, dict[str, str]] = {}
         for key, (x_entry, y_entry) in entries.items():
@@ -672,325 +527,10 @@ def build_gui() -> None:
             "delay_f1_newline_before_pos4_ms": f1_newline_before_pos4_var.get(),
             "delay_f1_newline_before_pos3_ms": f1_newline_before_pos3_var.get(),
             "delay_f1_newline_before_enter_ms": f1_newline_before_enter_var.get(),
-            "channel_wait_window_ms": channel_wait_window_var.get(),
-            "packet_port": packet_port_var.get(),
-            "packet_limit": packet_limit_var.get(),
+            "channel_watch_interval_ms": channel_watch_interval_var.get(),
+            "channel_timeout_ms": channel_timeout_var.get(),
             "newline_after_pos2": newline_var.get(),
-            "detect_three_digit_channel": three_digit_channel_var.get(),
-            "channel_names": sorted(channel_names),
         }
-
-    def get_port_value() -> int | None:
-        try:
-            port_value = int(packet_port_var.get())
-        except ValueError:
-            messagebox.showerror("포트 오류", "포트 번호를 숫자로 입력하세요.")
-            return None
-        if port_value <= 0 or port_value > 65535:
-            messagebox.showerror("포트 오류", "포트 번호는 1~65535 사이여야 합니다.")
-            return None
-        return port_value
-
-    def start_packet_capture() -> None:
-        if packet_manager.running:
-            messagebox.showinfo("패킷 캡쳐", "이미 캡쳐가 진행 중입니다.")
-            return
-        port_value = get_port_value()
-        if port_value is None:
-            return
-        try:
-            packet_manager.set_port(port_value)
-        except ValueError as exc:
-            messagebox.showerror("포트 오류", str(exc))
-            return
-        started = packet_manager.start()
-        if not started:
-            packet_status_var.set("패킷 캡쳐 시작 실패")
-            start_capture_btn.configure(state="normal")
-            stop_capture_btn.configure(state="disabled")
-            return
-
-        packet_status_var.set(f"포트 {port_value} 캡쳐 중...")
-        start_capture_btn.configure(state="disabled")
-        stop_capture_btn.configure(state="normal")
-
-    def stop_packet_capture() -> None:
-        if not packet_manager.running:
-            packet_status_var.set("패킷 캡쳐 중지됨")
-            start_capture_btn.configure(state="normal")
-            stop_capture_btn.configure(state="disabled")
-            return
-
-        packet_status_var.set("패킷 캡쳐 중지 중…")
-        start_capture_btn.configure(state="disabled")
-        stop_capture_btn.configure(state="disabled")
-
-        def _stop_capture_in_thread() -> None:
-            try:
-                packet_manager.stop()
-            finally:
-                root.after(0, _finalize_stop_capture)
-
-        def _finalize_stop_capture() -> None:
-            packet_status_var.set("패킷 캡쳐 중지됨")
-            start_capture_btn.configure(state="normal")
-            stop_capture_btn.configure(state="disabled")
-
-        threading.Thread(target=_stop_capture_in_thread, daemon=True).start()
-
-    start_capture_btn.configure(command=start_packet_capture)
-    stop_capture_btn.configure(command=stop_packet_capture)
-    channel_info_btn.configure(command=lambda: show_channel_info_window())
-
-    def extract_channel_names(payload: str) -> list[str]:
-        normalized = payload.replace("\n", "")
-        pattern_key = "strict" if three_digit_channel_var.get() else "flex"
-        pattern = channel_name_patterns[pattern_key]
-        return [match.group(0) for match in pattern.finditer(normalized)]
-
-    def refresh_channel_treeview() -> None:
-        nonlocal channel_treeview
-        if channel_treeview is None:
-            return
-        for item in channel_treeview.get_children():
-            channel_treeview.delete(item)
-        for idx, name in enumerate(sorted(channel_names), start=1):
-            channel_treeview.insert("", "end", text=f"{idx}. {name}")
-
-    def log_new_channel(name: str) -> None:
-        timestamp = time.time()
-        append_packet_group(timestamp, [f"[새 채널] ({name})"])
-        channel_alert_var.set(f"{format_timestamp(timestamp)} 새 채널 감지: {name}")
-
-    def detect_channel_names(payload: str) -> bool:
-        new_found = False
-        for candidate in extract_channel_names(payload):
-            if candidate not in channel_names:
-                channel_names.add(candidate)
-                new_found = True
-                log_new_channel(candidate)
-        if new_found:
-            refresh_channel_treeview()
-        return new_found
-
-    def log_channel_packet(payload: str) -> None:
-        timestamp = time.time()
-        append_packet_group(timestamp, [f"[ChannelName 감지] {payload}"])
-        channel_packet_alert_var.set(f"{format_timestamp(timestamp)} ChannelName 패킷 감지")
-
-    class ChannelDetectionSequence:
-        def __init__(self) -> None:
-            self.running = False
-            self.packet_queue: Queue[tuple[float, bool]] = Queue()
-            self.newline_mode = False
-
-        def start(self, newline_mode: bool) -> None:
-            if self.running:
-                messagebox.showinfo("매크로", "F3 매크로가 이미 실행 중입니다.")
-                return
-            self.running = True
-            self._clear_queue()
-            self.newline_mode = newline_mode
-            controller.set_input_logger(debug_recorder)
-            debug_recorder.start()
-            append_debug_log("F3 매크로 시작")
-            threading.Thread(target=self._run_sequence, daemon=True).start()
-
-        def stop(self) -> None:
-            self.running = False
-            self._clear_queue()
-            debug_recorder.stop()
-            controller.set_input_logger(None)
-            append_debug_log("F3 매크로 중단")
-
-        def notify_channel_packet(self, new_channel_logged: bool) -> None:
-            if not self.running:
-                return
-            self.packet_queue.put((time.time(), new_channel_logged))
-
-        def _run_on_main(self, func: Callable[[], None]) -> None:
-            done = threading.Event()
-
-            def _wrapper() -> None:
-                try:
-                    func()
-                finally:
-                    done.set()
-
-            root.after(0, _wrapper)
-            done.wait()
-
-        def _set_status(self, message: str) -> None:
-            root.after(0, status_var.set, message)
-
-        def _clear_queue(self) -> None:
-            while True:
-                try:
-                    self.packet_queue.get_nowait()
-                except Empty:
-                    break
-
-        def _get_packet(self, timeout: float | None) -> tuple[float, bool] | None:
-            if not self.running:
-                return None
-
-            if timeout is None:
-                interval = 0.1
-                while self.running:
-                    try:
-                        return self.packet_queue.get(timeout=interval)
-                    except Empty:
-                        continue
-                return None
-
-            end_time = time.time() + timeout
-            while self.running and time.time() < end_time:
-                remaining = max(end_time - time.time(), 0)
-                wait_time = min(0.1, remaining)
-                try:
-                    return self.packet_queue.get(timeout=wait_time)
-                except Empty:
-                    continue
-            return None
-
-        def _run_sequence(self) -> None:
-            try:
-                while self.running:
-                    self._set_status("F3: F2 기능 실행 중…")
-                    self._run_on_main(
-                        lambda: controller.reset_and_run_first(
-                            newline_mode=self.newline_mode
-                        )
-                    )
-
-                    self._set_status("F3: ChannelName 문자열을 기다리는 중…")
-                    first_packet = self._get_packet(timeout=None)
-                    if first_packet is None:
-                        break
-
-                    log_detected = first_packet[1]
-                    wait_window_sec = self._delay_seconds(get_channel_wait_window_ms())
-                    detection_deadline = time.time() + wait_window_sec if log_detected else None
-                    should_run_macro = False
-
-                    while self.running:
-                        timeout = wait_window_sec
-                        if detection_deadline is not None:
-                            timeout = max(detection_deadline - time.time(), 0)
-
-                        next_packet = self._get_packet(timeout=timeout)
-                        if next_packet is None:
-                            if log_detected and detection_deadline is not None:
-                                should_run_macro = True
-                            break
-
-                        log_detected = log_detected or next_packet[1]
-                        if log_detected and detection_deadline is None:
-                            detection_deadline = time.time() + wait_window_sec
-
-                        if (
-                            log_detected
-                            and detection_deadline is not None
-                            and time.time() >= detection_deadline
-                        ):
-                            should_run_macro = True
-                            break
-
-                    if not self.running:
-                        break
-
-                    if should_run_macro and log_detected:
-                        self._set_status("F3: 조건 충족, F1 실행 중…")
-                        self._run_on_main(
-                            lambda: controller.run_step(newline_mode=self.newline_mode)
-                        )
-                        break
-
-                    self._set_status("F3: 새 채널 미감지, 재시도…")
-            finally:
-                self.running = False
-                self._run_on_main(controller._update_status)
-                debug_recorder.stop()
-                controller.set_input_logger(None)
-                append_debug_log("F3 매크로 종료")
-
-        def _delay_seconds(self, delay_ms: int) -> float:
-            return max(delay_ms, 0) / 1000
-
-    channel_detection_sequence = ChannelDetectionSequence()
-
-    def detect_channel_packet(payload: str, new_channel_logged: bool) -> None:
-        if ChannelSegmentRecorder.anchor_keyword in payload:
-            log_channel_packet(payload)
-            channel_detection_sequence.notify_channel_packet(new_channel_logged)
-
-    def delete_selected_channel() -> None:
-        if channel_treeview is None:
-            return
-        selected_items = channel_treeview.selection()
-        if not selected_items:
-            messagebox.showinfo("채널 삭제", "삭제할 채널을 선택하세요.")
-            return
-
-        removed = False
-        for item_id in selected_items:
-            text = channel_treeview.item(item_id, "text")
-            _, _, channel_name = text.partition(". ")
-            target = channel_name or text
-            if target in channel_names:
-                channel_names.remove(target)
-                removed = True
-
-        if removed:
-            refresh_channel_treeview()
-
-    def clear_all_channels() -> None:
-        if not channel_names:
-            messagebox.showinfo("채널 초기화", "삭제할 채널 정보가 없습니다.")
-            return
-        if not messagebox.askyesno("채널 초기화", "모든 채널 정보를 삭제할까요?"):
-            return
-
-        channel_names.clear()
-        refresh_channel_treeview()
-        status_var.set("채널 정보가 초기화되었습니다.")
-
-    def show_channel_info_window() -> None:
-        nonlocal channel_info_window, channel_treeview
-        if channel_info_window is not None and tk.Toplevel.winfo_exists(channel_info_window):
-            channel_info_window.lift()
-            refresh_channel_treeview()
-            return
-        channel_info_window = tk.Toplevel(root)
-        channel_info_window.title("채널 정보")
-        channel_info_window.geometry("300x300")
-        channel_info_window.resizable(False, True)
-
-        tree = ttk.Treeview(channel_info_window, columns=("name",), show="tree")
-        tree.pack(fill="both", expand=True, padx=8, pady=8)
-        tree_scroll = ttk.Scrollbar(channel_info_window, orient="vertical", command=tree.yview)
-        tree.configure(yscrollcommand=tree_scroll.set)
-        tree_scroll.pack(side="right", fill="y", padx=(0, 8))
-
-        button_bar = ttk.Frame(channel_info_window)
-        button_bar.pack(fill="x", padx=8, pady=(0, 8))
-        ttk.Button(button_bar, text="초기화", command=clear_all_channels).pack(side="left")
-        ttk.Button(button_bar, text="선택 삭제", command=delete_selected_channel).pack(side="right")
-
-        channel_treeview = tree
-        refresh_channel_treeview()
-
-        def on_close_channel_window() -> None:
-            nonlocal channel_info_window, channel_treeview
-            window = channel_info_window
-            channel_info_window = None
-            channel_treeview = None
-            tree_scroll.destroy()
-            tree.destroy()
-            if window is not None:
-                window.destroy()
-
-        channel_info_window.protocol("WM_DELETE_WINDOW", on_close_channel_window)
 
     def build_pattern_table(names: list[str]) -> tuple[str | None, list[list[str]]]:
         if not names:
@@ -1026,11 +566,11 @@ def build_gui() -> None:
             padded = row + [""] * (6 - len(row))
             test_pattern_table.insert("", "end", values=padded)
 
-    def add_test_record(content: str) -> None:
+    def add_test_record(content: str) -> list[str]:
         matches = pattern_table_regex.findall(content)
         new_names = [name for name in matches if name not in test_channel_name_set]
         if not new_names:
-            return
+            return []
 
         for name in new_names:
             test_channel_name_set.add(name)
@@ -1050,6 +590,7 @@ def build_gui() -> None:
             test_treeview.selection_set(item_id)
             update_test_detail(index)
             update_pattern_table()
+        return new_names
 
     def update_test_detail(selected_index: int | None = None) -> None:
         if test_detail_text is None:
@@ -1205,7 +746,152 @@ def build_gui() -> None:
 
         test_window.protocol("WM_DELETE_WINDOW", on_close_test_window)
 
-    channel_segment_recorder = ChannelSegmentRecorder(add_test_record)
+    class ChannelDetectionSequence:
+        def __init__(self) -> None:
+            self.running = False
+            self.pattern_queue: Queue[float] = Queue()
+            self.newline_mode = False
+
+        def start(self, newline_mode: bool) -> None:
+            if self.running:
+                messagebox.showinfo("매크로", "F3 매크로가 이미 실행 중입니다.")
+                return
+            self.running = True
+            self._clear_queue()
+            self.newline_mode = newline_mode
+            controller.set_input_logger(debug_recorder)
+            debug_recorder.start()
+            append_debug_log("F3 매크로 시작")
+            threading.Thread(target=self._run_sequence, daemon=True).start()
+
+        def stop(self) -> None:
+            self.running = False
+            self._clear_queue()
+            debug_recorder.stop()
+            controller.set_input_logger(None)
+            append_debug_log("F3 매크로 중단")
+
+        def notify_new_pattern(self) -> None:
+            if not self.running:
+                return
+            self.pattern_queue.put(time.time())
+
+        def _run_on_main(self, func: Callable[[], None]) -> None:
+            done = threading.Event()
+
+            def _wrapper() -> None:
+                try:
+                    func()
+                finally:
+                    done.set()
+
+            root.after(0, _wrapper)
+            done.wait()
+
+        def _set_status(self, message: str) -> None:
+            root.after(0, status_var.set, message)
+
+        def _clear_queue(self) -> None:
+            while True:
+                try:
+                    self.pattern_queue.get_nowait()
+                except Empty:
+                    break
+
+        def _wait_for_new_pattern(self) -> bool:
+            interval_sec = self._delay_seconds(get_channel_watch_interval_ms())
+            timeout_sec = self._delay_seconds(get_channel_timeout_ms())
+            deadline = time.time() + timeout_sec
+
+            while self.running and time.time() < deadline:
+                remaining = max(deadline - time.time(), 0)
+                wait_time = interval_sec if interval_sec > 0 else remaining
+                wait_time = min(wait_time if wait_time > 0 else remaining, remaining)
+                if wait_time <= 0:
+                    wait_time = 0.01
+                try:
+                    self.pattern_queue.get(timeout=wait_time)
+                    return True
+                except Empty:
+                    continue
+            return False
+
+        def _run_sequence(self) -> None:
+            try:
+                while self.running:
+                    self._set_status("F3: F2 기능 실행 중…")
+                    self._run_on_main(
+                        lambda: controller.reset_and_run_first(
+                            newline_mode=self.newline_mode
+                        )
+                    )
+
+                    self._set_status("F3: 새 채널 감시 중…")
+                    self._clear_queue()
+                    detected = self._wait_for_new_pattern()
+
+                    if not self.running:
+                        break
+
+                    if detected:
+                        self._set_status("F3: 새 패턴 감지, F1 실행 중…")
+                        self._run_on_main(
+                            lambda: controller.run_step(newline_mode=self.newline_mode)
+                        )
+                        break
+
+                    self._set_status("F3: 새 채널 미감지, 재시도…")
+            finally:
+                self.running = False
+                self._run_on_main(controller._update_status)
+                debug_recorder.stop()
+                controller.set_input_logger(None)
+                append_debug_log("F3 매크로 종료")
+
+        def _delay_seconds(self, delay_ms: int) -> float:
+            return max(delay_ms, 0) / 1000
+
+    channel_detection_sequence = ChannelDetectionSequence()
+
+    def handle_captured_pattern(content: str) -> None:
+        new_names = add_test_record(content)
+        if new_names:
+            channel_detection_sequence.notify_new_pattern()
+
+    channel_segment_recorder = ChannelSegmentRecorder(handle_captured_pattern)
+
+    def process_packet_detection(text: str) -> None:
+        channel_segment_recorder.feed(text)
+
+    packet_manager = PacketCaptureManager(
+        on_packet=lambda text: root.after(0, process_packet_detection, text),
+        on_error=lambda msg: root.after(0, messagebox.showerror, "패킷 캡쳐 오류", msg),
+    )
+
+    def start_packet_capture() -> None:
+        if packet_manager.running:
+            return
+        try:
+            started = packet_manager.start()
+        except Exception as exc:  # pragma: no cover - 안전망
+            append_debug_log(f"패킷 캡쳐 시작 실패: {exc}")
+            return
+
+        if not started:
+            append_debug_log("패킷 캡쳐를 시작하지 못했습니다. scapy 설치 여부를 확인하세요.")
+        else:
+            append_debug_log(f"패킷 캡쳐 시작 (포트 {packet_manager.port})")
+
+    def stop_packet_capture() -> None:
+        if not packet_manager.running:
+            return
+        try:
+            packet_manager.stop()
+            append_debug_log("패킷 캡쳐 중지")
+        except Exception:
+            append_debug_log("패킷 캡쳐 중지 실패")
+
+    start_packet_capture()
 
     test_button.configure(command=show_test_window)
 
