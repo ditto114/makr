@@ -460,31 +460,32 @@ def build_gui() -> None:
             padded = row + [""] * (6 - len(row))
             test_pattern_table.insert("", "end", values=padded)
 
-    def add_test_record(content: str) -> list[str]:
+    def add_test_record(content: str) -> tuple[list[str], list[str]]:
         matches = pattern_table_regex.findall(content)
         new_names = [name for name in matches if name not in test_channel_name_set]
-        if not new_names:
-            return []
+        if not matches:
+            return [], []
 
-        for name in new_names:
-            test_channel_name_set.add(name)
-            test_channel_names.append(name)
+        if new_names:
+            for name in new_names:
+                test_channel_name_set.add(name)
+                test_channel_names.append(name)
 
-        timestamp = format_timestamp(time.time())
-        table_text, table_rows = build_pattern_table(test_channel_names)
-        display_content = (
-            f"{content}\n\n[추출된 패턴]\n{table_text}"
-            if table_text
-            else content
-        )
-        test_records.append((timestamp, content, table_text, display_content, table_rows))
-        if test_treeview is not None:
-            index = len(test_records)
-            item_id = test_treeview.insert("", "end", values=(index, timestamp, display_content))
-            test_treeview.selection_set(item_id)
-            update_test_detail(index)
-            update_pattern_table()
-        return new_names
+            timestamp = format_timestamp(time.time())
+            table_text, table_rows = build_pattern_table(test_channel_names)
+            display_content = (
+                f"{content}\n\n[추출된 패턴]\n{table_text}"
+                if table_text
+                else content
+            )
+            test_records.append((timestamp, content, table_text, display_content, table_rows))
+            if test_treeview is not None:
+                index = len(test_records)
+                item_id = test_treeview.insert("", "end", values=(index, timestamp, display_content))
+                test_treeview.selection_set(item_id)
+                update_test_detail(index)
+                update_pattern_table()
+        return matches, new_names
 
     def update_test_detail(selected_index: int | None = None) -> None:
         if test_detail_text is None:
@@ -643,9 +644,9 @@ def build_gui() -> None:
     class ChannelDetectionSequence:
         def __init__(self) -> None:
             self.running = False
-            self.pattern_queue: Queue[float] = Queue()
+            self.detection_queue: Queue[tuple[float, bool]] = Queue()
             self.newline_mode = False
-            self.first_detected_at: float | None = None
+            self.last_detected_at: float | None = None
 
         def start(self, newline_mode: bool) -> None:
             if self.running:
@@ -654,26 +655,21 @@ def build_gui() -> None:
             self.running = True
             self._clear_queue()
             self.newline_mode = newline_mode
-            self.first_detected_at = None
+            self.last_detected_at = None
             threading.Thread(target=self._run_sequence, daemon=True).start()
 
         def stop(self) -> None:
             self.running = False
             self._clear_queue()
-            self.first_detected_at = None
+            self.last_detected_at = None
 
-        def notify_channel_activity(self, detected_at: float | None = None) -> None:
-            if not self.running:
-                return
-            if self.first_detected_at is None:
-                self.first_detected_at = detected_at or time.time()
-
-        def notify_new_pattern(self, detected_at: float | None = None) -> None:
+        def notify_channel_found(
+            self, *, detected_at: float | None = None, is_new: bool
+        ) -> None:
             if not self.running:
                 return
             timestamp = detected_at or time.time()
-            self.notify_channel_activity(timestamp)
-            self.pattern_queue.put(timestamp)
+            self.detection_queue.put((timestamp, is_new))
 
         def _run_on_main(self, func: Callable[[], None]) -> None:
             done = threading.Event()
@@ -693,39 +689,27 @@ def build_gui() -> None:
         def _clear_queue(self) -> None:
             while True:
                 try:
-                    self.pattern_queue.get_nowait()
+                    self.detection_queue.get_nowait()
                 except Empty:
                     break
 
-        def _wait_for_new_pattern(self) -> bool:
-            interval_sec = self._delay_seconds(get_channel_watch_interval_ms())
-            timeout_sec = self._delay_seconds(get_channel_timeout_ms())
-            deadline: float | None = None if timeout_sec > 0 else time.time()
-
-            while self.running:
-                if self.first_detected_at is not None and deadline is None:
-                    deadline = self.first_detected_at + timeout_sec
-
-                if deadline is not None and time.time() >= deadline:
-                    return False
-
-                remaining = None if deadline is None else max(deadline - time.time(), 0)
-                wait_time = interval_sec if interval_sec > 0 else (remaining if remaining is not None else 0.1)
-                if remaining is not None:
-                    wait_time = min(wait_time if wait_time > 0 else remaining, remaining)
-                if wait_time <= 0:
-                    wait_time = 0.01
-
+        def _wait_for_detection(self, timeout_sec: float) -> tuple[float, bool] | None:
+            if timeout_sec <= 0:
                 try:
-                    event_time = self.pattern_queue.get(timeout=wait_time)
-                    if self.first_detected_at is None:
-                        self.first_detected_at = event_time
-                        if timeout_sec > 0:
-                            deadline = self.first_detected_at + timeout_sec
-                    return True
+                    return self.detection_queue.get_nowait()
+                except Empty:
+                    return None
+
+            deadline = time.time() + timeout_sec
+            while self.running:
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    return None
+                try:
+                    return self.detection_queue.get(timeout=remaining)
                 except Empty:
                     continue
-            return False
+            return None
 
         def _run_sequence(self) -> None:
             try:
@@ -737,22 +721,65 @@ def build_gui() -> None:
                         )
                     )
 
-                    self._set_status("F3: 새 채널 감시 중…")
+                    self._set_status("F3: 채널명 감시 중…")
                     self._clear_queue()
-                    self.first_detected_at = None
-                    detected = self._wait_for_new_pattern()
+                    timeout_sec = self._delay_seconds(get_channel_timeout_ms())
+                    first_detection = self._wait_for_detection(timeout_sec)
+                    self.last_detected_at = first_detection[0] if first_detection else None
 
                     if not self.running:
                         break
 
-                    if detected:
-                        self._set_status("F3: 새 패턴 감지, F1 실행 중…")
+                    if first_detection is None:
+                        self._set_status("F3: 채널명이 발견되지 않았습니다. 재시도합니다…")
+                        continue
+
+                    first_time, is_new = first_detection
+                    if is_new:
+                        self._set_status("F3: 새 채널명 기록, F1 실행 중…")
                         self._run_on_main(
                             lambda: controller.run_step(newline_mode=self.newline_mode)
                         )
                         break
 
-                    self._set_status("F3: 새 채널 미감지, 재시도…")
+                    watch_interval = self._delay_seconds(get_channel_watch_interval_ms())
+                    if watch_interval <= 0:
+                        self._set_status("F3: 새 채널명이 없어 재시작합니다…")
+                        continue
+
+                    deadline = first_time + watch_interval
+                    new_channel_found = False
+
+                    while self.running:
+                        remaining = deadline - time.time()
+                        if remaining <= 0:
+                            break
+
+                        event = self._wait_for_detection(remaining)
+                        if not self.running:
+                            break
+                        if event is None:
+                            break
+
+                        detected_time, event_is_new = event
+                        deadline = detected_time + watch_interval
+                        self.last_detected_at = detected_time
+
+                        if event_is_new:
+                            new_channel_found = True
+                            break
+
+                    if not self.running:
+                        break
+
+                    if new_channel_found:
+                        self._set_status("F3: 새 채널명 기록, F1 실행 중…")
+                        self._run_on_main(
+                            lambda: controller.run_step(newline_mode=self.newline_mode)
+                        )
+                        break
+
+                    self._set_status("F3: 새 채널명이 없어 재시작합니다…")
             finally:
                 self.running = False
                 self._run_on_main(controller._update_status)
@@ -764,13 +791,14 @@ def build_gui() -> None:
 
     def handle_captured_pattern(content: str) -> None:
         detected_at = time.time()
-        new_names = add_test_record(content)
-        if new_names:
-            channel_detection_sequence.notify_new_pattern(detected_at)
+        matches, new_names = add_test_record(content)
+        if matches:
+            channel_detection_sequence.notify_channel_found(
+                detected_at=detected_at,
+                is_new=bool(new_names),
+            )
 
-    channel_segment_recorder = ChannelSegmentRecorder(
-        handle_captured_pattern, channel_detection_sequence.notify_channel_activity
-    )
+    channel_segment_recorder = ChannelSegmentRecorder(handle_captured_pattern)
 
     def process_packet_detection(text: str) -> None:
         channel_segment_recorder.feed(text)
