@@ -287,7 +287,10 @@ def build_gui() -> None:
     button_frame.pack(pady=10)
 
     test_button = tk.Button(button_frame, text="테스트", width=12)
-    test_button.pack(side="left", padx=5)
+    test_button.pack(side="right", padx=5)
+
+    packet_capture_button = tk.Button(button_frame, text="패킷캡쳐 시작", width=12)
+    packet_capture_button.pack(side="right", padx=5)
 
     delay_frame = tk.LabelFrame(root, text="딜레이 설정")
     delay_frame.pack(fill="x", padx=10, pady=(0, 10))
@@ -777,6 +780,10 @@ def build_gui() -> None:
         on_error=lambda msg: root.after(0, messagebox.showerror, "패킷 캡쳐 오류", msg),
     )
 
+    def update_packet_capture_button() -> None:
+        text = "패킷캡쳐 중지" if packet_manager.running else "패킷캡쳐 시작"
+        packet_capture_button.configure(text=text)
+
     def start_packet_capture() -> None:
         if packet_manager.running:
             return
@@ -784,10 +791,16 @@ def build_gui() -> None:
             started = packet_manager.start()
         except Exception as exc:  # pragma: no cover - 안전망
             messagebox.showerror("패킷 캡쳐 오류", f"패킷 캡쳐 시작 실패: {exc}")
+            update_packet_capture_button()
             return
 
         if not started:
             messagebox.showwarning("패킷 캡쳐", "패킷 캡쳐를 시작하지 못했습니다. scapy 설치 여부를 확인하세요.")
+            update_packet_capture_button()
+            return
+
+        status_var.set("패킷 캡쳐가 시작되었습니다.")
+        update_packet_capture_button()
 
     def stop_packet_capture() -> None:
         if not packet_manager.running:
@@ -796,8 +809,19 @@ def build_gui() -> None:
             packet_manager.stop()
         except Exception:
             messagebox.showwarning("패킷 캡쳐", "패킷 캡쳐 중지 실패")
+        else:
+            status_var.set("패킷 캡쳐가 중지되었습니다.")
+        finally:
+            update_packet_capture_button()
 
-    start_packet_capture()
+    def toggle_packet_capture() -> None:
+        if packet_manager.running:
+            stop_packet_capture()
+        else:
+            start_packet_capture()
+
+    update_packet_capture_button()
+    packet_capture_button.configure(command=toggle_packet_capture)
 
     test_button.configure(command=show_test_window)
 
