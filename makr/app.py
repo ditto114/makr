@@ -476,8 +476,13 @@ def build_gui() -> None:
     class ChannelSegmentRecorder:
         anchor_keyword = "ChannelName"
 
-        def __init__(self, on_capture: Callable[[str], None]) -> None:
+        def __init__(
+            self,
+            on_capture: Callable[[str], None],
+            on_channel_activity: Callable[[float], None] | None = None,
+        ) -> None:
             self._on_capture = on_capture
+            self._on_channel_activity = on_channel_activity
             self._buffer = ""
             self._pattern = re.compile(r"[A-Z]-[가-힣]\d{2,3}-")
 
@@ -489,6 +494,8 @@ def build_gui() -> None:
             normalized = self._normalize(text)
             if not normalized:
                 return
+            if self.anchor_keyword in normalized and self._on_channel_activity is not None:
+                self._on_channel_activity(time.time())
             self._buffer += normalized
             self._process_buffer()
 
@@ -499,6 +506,8 @@ def build_gui() -> None:
                     # 불필요한 데이터가 과도하게 쌓이지 않도록 끝부분만 유지
                     self._buffer = self._buffer[-len(self.anchor_keyword) :]
                     return
+                if self._on_channel_activity is not None:
+                    self._on_channel_activity(time.time())
 
                 search_start = anchor_idx + len(self.anchor_keyword)
                 match = self._pattern.search(self._buffer, pos=search_start)
@@ -751,6 +760,7 @@ def build_gui() -> None:
             self.running = False
             self.pattern_queue: Queue[float] = Queue()
             self.newline_mode = False
+            self.first_detected_at: float | None = None
 
         def start(self, newline_mode: bool) -> None:
             if self.running:
@@ -759,6 +769,7 @@ def build_gui() -> None:
             self.running = True
             self._clear_queue()
             self.newline_mode = newline_mode
+            self.first_detected_at = None
             controller.set_input_logger(debug_recorder)
             debug_recorder.start()
             append_debug_log("F3 매크로 시작")
@@ -767,14 +778,23 @@ def build_gui() -> None:
         def stop(self) -> None:
             self.running = False
             self._clear_queue()
+            self.first_detected_at = None
             debug_recorder.stop()
             controller.set_input_logger(None)
             append_debug_log("F3 매크로 중단")
 
-        def notify_new_pattern(self) -> None:
+        def notify_channel_activity(self, detected_at: float | None = None) -> None:
             if not self.running:
                 return
-            self.pattern_queue.put(time.time())
+            if self.first_detected_at is None:
+                self.first_detected_at = detected_at or time.time()
+
+        def notify_new_pattern(self, detected_at: float | None = None) -> None:
+            if not self.running:
+                return
+            timestamp = detected_at or time.time()
+            self.notify_channel_activity(timestamp)
+            self.pattern_queue.put(timestamp)
 
         def _run_on_main(self, func: Callable[[], None]) -> None:
             done = threading.Event()
@@ -801,16 +821,28 @@ def build_gui() -> None:
         def _wait_for_new_pattern(self) -> bool:
             interval_sec = self._delay_seconds(get_channel_watch_interval_ms())
             timeout_sec = self._delay_seconds(get_channel_timeout_ms())
-            deadline = time.time() + timeout_sec
+            deadline: float | None = None if timeout_sec > 0 else time.time()
 
-            while self.running and time.time() < deadline:
-                remaining = max(deadline - time.time(), 0)
-                wait_time = interval_sec if interval_sec > 0 else remaining
-                wait_time = min(wait_time if wait_time > 0 else remaining, remaining)
+            while self.running:
+                if self.first_detected_at is not None and deadline is None:
+                    deadline = self.first_detected_at + timeout_sec
+
+                if deadline is not None and time.time() >= deadline:
+                    return False
+
+                remaining = None if deadline is None else max(deadline - time.time(), 0)
+                wait_time = interval_sec if interval_sec > 0 else (remaining if remaining is not None else 0.1)
+                if remaining is not None:
+                    wait_time = min(wait_time if wait_time > 0 else remaining, remaining)
                 if wait_time <= 0:
                     wait_time = 0.01
+
                 try:
-                    self.pattern_queue.get(timeout=wait_time)
+                    event_time = self.pattern_queue.get(timeout=wait_time)
+                    if self.first_detected_at is None:
+                        self.first_detected_at = event_time
+                        if timeout_sec > 0:
+                            deadline = self.first_detected_at + timeout_sec
                     return True
                 except Empty:
                     continue
@@ -828,6 +860,7 @@ def build_gui() -> None:
 
                     self._set_status("F3: 새 채널 감시 중…")
                     self._clear_queue()
+                    self.first_detected_at = None
                     detected = self._wait_for_new_pattern()
 
                     if not self.running:
@@ -854,11 +887,14 @@ def build_gui() -> None:
     channel_detection_sequence = ChannelDetectionSequence()
 
     def handle_captured_pattern(content: str) -> None:
+        detected_at = time.time()
         new_names = add_test_record(content)
         if new_names:
-            channel_detection_sequence.notify_new_pattern()
+            channel_detection_sequence.notify_new_pattern(detected_at)
 
-    channel_segment_recorder = ChannelSegmentRecorder(handle_captured_pattern)
+    channel_segment_recorder = ChannelSegmentRecorder(
+        handle_captured_pattern, channel_detection_sequence.notify_channel_activity
+    )
 
     def process_packet_detection(text: str) -> None:
         channel_segment_recorder.feed(text)
