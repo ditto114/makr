@@ -18,12 +18,14 @@ class PacketCaptureManager:
         on_packet: Callable[[str], None],
         on_error: Callable[[str], None],
         port: int = 32800,
+        on_raw_packet: Callable[[bytes], None] | None = None,
     ) -> None:
         self._on_packet = on_packet
         self._on_error = on_error
         self._sniffer = None
         self._lock = threading.Lock()
         self._port = port
+        self._on_raw_packet = on_raw_packet
 
     @property
     def running(self) -> bool:
@@ -53,6 +55,8 @@ class PacketCaptureManager:
             raw_payload = bytes(packet[Raw].load)
             if not raw_payload:
                 return
+            if self._on_raw_packet is not None:
+                self._on_raw_packet(raw_payload)
             try:
                 decoded = raw_payload.decode("utf-8")
             except UnicodeDecodeError:

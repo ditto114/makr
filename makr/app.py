@@ -286,6 +286,9 @@ def build_gui() -> None:
     button_frame = tk.Frame(root)
     button_frame.pack(pady=10)
 
+    raw_packet_button = tk.Button(button_frame, text="테스트2", width=12)
+    raw_packet_button.pack(side="right", padx=5)
+
     test_button = tk.Button(button_frame, text="테스트", width=12)
     test_button.pack(side="right", padx=5)
 
@@ -352,11 +355,83 @@ def build_gui() -> None:
     test_channel_names: list[str] = []
     test_channel_name_set: set[str] = set()
     pattern_table_regex = re.compile(r"[A-Z][가-힣]\d{2,3}")
+    raw_packet_window: tk.Toplevel | None = None
+    raw_packet_text: tk.Text | None = None
+    raw_packet_records: list[tuple[str, str]] = []
+    raw_packet_sanitize_pattern = re.compile(r"[^A-Za-z0-9가-힣\n]")
 
     def format_timestamp(ts: float) -> str:
         ts_int = int(ts)
         millis = int((ts - ts_int) * 1000)
         return time.strftime('%H:%M:%S', time.localtime(ts)) + f".{millis:03d}"
+
+    def sanitize_raw_packet(text: str) -> str:
+        return raw_packet_sanitize_pattern.sub("-", text)
+
+    def decode_raw_payload(payload: bytes) -> str:
+        try:
+            return payload.decode("utf-8", errors="surrogateescape")
+        except Exception:
+            return payload.decode("utf-8", errors="replace")
+
+    def render_raw_packets() -> None:
+        if raw_packet_text is None:
+            return
+        raw_packet_text.configure(state="normal")
+        raw_packet_text.delete("1.0", "end")
+        for ts, content in raw_packet_records:
+            raw_packet_text.insert("end", f"[{ts}]\n{content}\n\n")
+        raw_packet_text.see("end")
+        raw_packet_text.configure(state="disabled")
+
+    def add_raw_packet(content: str) -> None:
+        sanitized = sanitize_raw_packet(content)
+        timestamp = format_timestamp(time.time())
+        raw_packet_records.append((timestamp, sanitized))
+        render_raw_packets()
+
+    def show_raw_packet_window() -> None:
+        nonlocal raw_packet_window, raw_packet_text
+        if raw_packet_window is not None and tk.Toplevel.winfo_exists(raw_packet_window):
+            raw_packet_window.lift()
+            raw_packet_window.focus_force()
+            render_raw_packets()
+            return
+
+        raw_packet_window = tk.Toplevel(root)
+        raw_packet_window.title("패킷 원문 보기")
+        raw_packet_window.geometry("520x420")
+        raw_packet_window.resizable(True, True)
+
+        desc = ttk.Label(
+            raw_packet_window,
+            text="캡쳐된 패킷을 디코딩 없이 받은 그대로 표시합니다. 알파벳/숫자/한글 외 문자는 '-'로 표시됩니다.",
+            wraplength=480,
+            justify="left",
+        )
+        desc.pack(fill="x", padx=10, pady=(10, 6))
+
+        text_frame = ttk.Frame(raw_packet_window)
+        text_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        scroll = ttk.Scrollbar(text_frame, orient="vertical")
+        scroll.pack(side="right", fill="y")
+        text_widget = tk.Text(text_frame, height=18, wrap="none", state="disabled")
+        text_widget.pack(fill="both", expand=True)
+        text_widget.configure(yscrollcommand=scroll.set)
+        scroll.configure(command=text_widget.yview)
+
+        raw_packet_text = text_widget
+        render_raw_packets()
+
+        def on_close_raw_window() -> None:
+            nonlocal raw_packet_window, raw_packet_text
+            raw_packet_text = None
+            window = raw_packet_window
+            raw_packet_window = None
+            if window is not None:
+                window.destroy()
+
+        raw_packet_window.protocol("WM_DELETE_WINDOW", on_close_raw_window)
 
     class ChannelSegmentRecorder:
         anchor_keyword = "ChannelName"
@@ -775,9 +850,14 @@ def build_gui() -> None:
     def process_packet_detection(text: str) -> None:
         channel_segment_recorder.feed(text)
 
+    def handle_raw_packet_bytes(payload: bytes) -> None:
+        raw_text = decode_raw_payload(payload)
+        add_raw_packet(raw_text)
+
     packet_manager = PacketCaptureManager(
         on_packet=lambda text: root.after(0, process_packet_detection, text),
         on_error=lambda msg: root.after(0, messagebox.showerror, "패킷 캡쳐 오류", msg),
+        on_raw_packet=lambda data: root.after(0, handle_raw_packet_bytes, data),
     )
 
     def update_packet_capture_button() -> None:
@@ -823,6 +903,7 @@ def build_gui() -> None:
     update_packet_capture_button()
     packet_capture_button.configure(command=toggle_packet_capture)
 
+    raw_packet_button.configure(command=show_raw_packet_window)
     test_button.configure(command=show_test_window)
 
     def on_hotkey_press(key: keyboard.Key) -> None:
