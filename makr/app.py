@@ -1,6 +1,6 @@
 """단계별 마우스/키보드 자동화를 위한 간단한 GUI.
 
-macOS에서 최상단에 고정된 창을 제공하며, 실행/다시 버튼으로
+macOS에서 최상단에 고정된 창을 제공하며, F1/F2 단축키로
 순차 동작을 제어합니다.
 """
 
@@ -69,11 +69,7 @@ class MacroController:
         self.status_var = status_var
         self.current_step = 1
         self.delay_config = delay_config
-        self.input_logger: MacroInputLogger | None = None
         self._update_status()
-
-    def set_input_logger(self, logger: "MacroInputLogger | None") -> None:
-        self.input_logger = logger
 
     def _update_status(self) -> None:
         self.status_var.set(f"다음 실행 단계: {self.current_step}단계")
@@ -91,13 +87,9 @@ class MacroController:
     def _click_point(self, point: tuple[int, int], *, label: str | None = None) -> None:
         x_val, y_val = point
         pyautogui.click(x_val, y_val)
-        if self.input_logger:
-            self.input_logger.record_click(label or "클릭", point)
 
     def _press_key(self, key: str, *, label: str | None = None) -> None:
         pyautogui.press(key)
-        if self.input_logger:
-            self.input_logger.record_key(label or key, key)
 
     def _delay_seconds(self, delay_ms: int) -> float:
         return max(delay_ms, 0) / 1000
@@ -108,7 +100,7 @@ class MacroController:
             time.sleep(delay_sec)
 
     def run_step(self, *, newline_mode: bool = False) -> None:
-        """실행 버튼 콜백: 현재 단계 수행 후 다음 단계로 이동."""
+        """실행 단축키 콜백: 현재 단계 수행 후 다음 단계로 이동."""
         if self.current_step == 1:
             self._run_step_one()
             self.current_step = 2
@@ -118,7 +110,7 @@ class MacroController:
         self._update_status()
 
     def reset_and_run_first(self, *, newline_mode: bool = False) -> None:
-        """다시 버튼 콜백: Esc 입력 후 1단계를 재실행."""
+        """다시 단축키 콜백: Esc 입력 후 1단계를 재실행."""
         self._sleep_ms(self.delay_config.f2_before_esc())
         self._press_key("esc", label="초기화 ESC")
         self.current_step = 1
@@ -291,118 +283,8 @@ def build_gui() -> None:
 
     controller = MacroController(entries, status_var, delay_config)
 
-    debug_window: tk.Toplevel | None = None
-    debug_log_widget: tk.Text | None = None
-    debug_logs: list[str] = []
-    debug_logs_lock = threading.Lock()
-
-    def append_debug_log(message: str) -> None:
-        nonlocal debug_log_widget
-        timestamped = f"{format_timestamp(time.time())} - {message}"
-        with debug_logs_lock:
-            debug_logs.append(timestamped)
-
-        def _write_log() -> None:
-            if debug_log_widget is None:
-                return
-            debug_log_widget.configure(state="normal")
-            debug_log_widget.insert(tk.END, f"{timestamped}\n")
-            debug_log_widget.see(tk.END)
-            debug_log_widget.configure(state="disabled")
-
-        root.after(0, _write_log)
-
-    class MacroInputLogger:
-        def __init__(self, log_callback: Callable[[str], None]) -> None:
-            self._log_callback = log_callback
-            self._start_ms: float | None = None
-            self._lock = threading.Lock()
-
-        def start(self) -> None:
-            with self._lock:
-                self._start_ms = time.perf_counter() * 1000
-
-        def stop(self) -> None:
-            with self._lock:
-                self._start_ms = None
-
-        def _elapsed_ms(self) -> int | None:
-            with self._lock:
-                if self._start_ms is None:
-                    return None
-                return int(time.perf_counter() * 1000 - self._start_ms)
-
-        def record_click(self, label: str, point: tuple[int, int]) -> None:
-            elapsed = self._elapsed_ms()
-            if elapsed is None:
-                return
-            x_val, y_val = point
-            self._log_callback(
-                f"[자동 입력] {label}: {elapsed}ms (클릭 {x_val}, {y_val})"
-            )
-
-        def record_key(self, label: str, key: str) -> None:
-            elapsed = self._elapsed_ms()
-            if elapsed is None:
-                return
-            self._log_callback(f"[자동 입력] {label}: {elapsed}ms (키 {key})")
-
-    debug_recorder = MacroInputLogger(append_debug_log)
-
-    def close_debug_window() -> None:
-        nonlocal debug_window, debug_log_widget
-        if debug_window is not None:
-            debug_window.destroy()
-        debug_window = None
-        debug_log_widget = None
-
-    def show_debug_window() -> None:
-        nonlocal debug_window, debug_log_widget
-        if debug_window is not None and tk.Toplevel.winfo_exists(debug_window):
-            debug_window.lift()
-            debug_window.focus_force()
-            return
-
-        debug_window = tk.Toplevel(root)
-        debug_window.title("디버깅")
-        debug_window.geometry("400x300")
-        debug_window.resizable(True, True)
-
-        info_label = tk.Label(
-            debug_window,
-            text="F3 동작 중 발생한 마우스/키보드 기록 (ms 단위)",
-            anchor="w",
-        )
-        info_label.pack(fill="x", padx=8, pady=(8, 4))
-
-        log_frame = tk.Frame(debug_window)
-        log_frame.pack(fill="both", expand=True, padx=8, pady=(0, 8))
-        debug_log_widget = tk.Text(log_frame, state="disabled", height=10)
-        debug_log_widget.pack(side="left", fill="both", expand=True)
-        log_scroll = tk.Scrollbar(log_frame, command=debug_log_widget.yview)
-        log_scroll.pack(side="right", fill="y")
-        debug_log_widget.configure(yscrollcommand=log_scroll.set)
-
-        with debug_logs_lock:
-            for line in debug_logs:
-                debug_log_widget.configure(state="normal")
-                debug_log_widget.insert(tk.END, f"{line}\n")
-                debug_log_widget.configure(state="disabled")
-
-        debug_window.protocol("WM_DELETE_WINDOW", close_debug_window)
-        debug_window.focus_force()
-
     button_frame = tk.Frame(root)
     button_frame.pack(pady=10)
-
-    run_button = tk.Button(button_frame, text="실행 (F1)", width=12, command=controller.run_step)
-    run_button.pack(side="left", padx=5)
-
-    reset_button = tk.Button(button_frame, text="다시 (F2)", width=12, command=controller.reset_and_run_first)
-    reset_button.pack(side="left", padx=5)
-
-    debug_button = tk.Button(button_frame, text="디버깅", width=12, command=show_debug_window)
-    debug_button.pack(side="left", padx=5)
 
     test_button = tk.Button(button_frame, text="테스트", width=12)
     test_button.pack(side="left", padx=5)
@@ -770,18 +652,12 @@ def build_gui() -> None:
             self._clear_queue()
             self.newline_mode = newline_mode
             self.first_detected_at = None
-            controller.set_input_logger(debug_recorder)
-            debug_recorder.start()
-            append_debug_log("F3 매크로 시작")
             threading.Thread(target=self._run_sequence, daemon=True).start()
 
         def stop(self) -> None:
             self.running = False
             self._clear_queue()
             self.first_detected_at = None
-            debug_recorder.stop()
-            controller.set_input_logger(None)
-            append_debug_log("F3 매크로 중단")
 
         def notify_channel_activity(self, detected_at: float | None = None) -> None:
             if not self.running:
@@ -877,9 +753,6 @@ def build_gui() -> None:
             finally:
                 self.running = False
                 self._run_on_main(controller._update_status)
-                debug_recorder.stop()
-                controller.set_input_logger(None)
-                append_debug_log("F3 매크로 종료")
 
         def _delay_seconds(self, delay_ms: int) -> float:
             return max(delay_ms, 0) / 1000
@@ -910,22 +783,19 @@ def build_gui() -> None:
         try:
             started = packet_manager.start()
         except Exception as exc:  # pragma: no cover - 안전망
-            append_debug_log(f"패킷 캡쳐 시작 실패: {exc}")
+            messagebox.showerror("패킷 캡쳐 오류", f"패킷 캡쳐 시작 실패: {exc}")
             return
 
         if not started:
-            append_debug_log("패킷 캡쳐를 시작하지 못했습니다. scapy 설치 여부를 확인하세요.")
-        else:
-            append_debug_log(f"패킷 캡쳐 시작 (포트 {packet_manager.port})")
+            messagebox.showwarning("패킷 캡쳐", "패킷 캡쳐를 시작하지 못했습니다. scapy 설치 여부를 확인하세요.")
 
     def stop_packet_capture() -> None:
         if not packet_manager.running:
             return
         try:
             packet_manager.stop()
-            append_debug_log("패킷 캡쳐 중지")
         except Exception:
-            append_debug_log("패킷 캡쳐 중지 실패")
+            messagebox.showwarning("패킷 캡쳐", "패킷 캡쳐 중지 실패")
 
     start_packet_capture()
 
@@ -956,7 +826,6 @@ def build_gui() -> None:
         if hotkey_listener is not None:
             hotkey_listener.stop()
         channel_detection_sequence.stop()
-        debug_recorder.stop()
         stop_packet_capture()
         root.destroy()
 
