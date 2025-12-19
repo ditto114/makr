@@ -27,7 +27,8 @@ class PacketCaptureManager:
 
     @property
     def running(self) -> bool:
-        return bool(self._sniffer and getattr(self._sniffer, "running", False))
+        with self._lock:
+            return self._is_running(self._sniffer)
 
     @property
     def port(self) -> int:
@@ -39,8 +40,9 @@ class PacketCaptureManager:
         self._port = port
 
     def start(self) -> bool:
-        if self.running:
-            return True
+        with self._lock:
+            if self._is_running(self._sniffer):
+                return True
         try:
             from scapy.all import AsyncSniffer, Raw
         except Exception:  # pragma: no cover - scapy 미설치 환경
@@ -70,20 +72,50 @@ class PacketCaptureManager:
             self._on_error(f"패킷 캡쳐를 시작하지 못했습니다: {exc}")
             return False
 
-        self._sniffer = sniffer
-        if not self.running:
-            self._sniffer = None
+        with self._lock:
+            self._sniffer = sniffer
+            is_running = self._is_running(self._sniffer)
+        if not is_running:
+            with self._lock:
+                self._sniffer = None
             self._on_error("패킷 캡쳐를 시작하지 못했습니다: 스니퍼가 활성화되지 않았습니다.")
             return False
 
         return True
 
     def stop(self) -> None:
-        if not self.running:
+        with self._lock:
+            sniffer = self._sniffer
+            self._sniffer = None
+
+        if sniffer is None:
             return
+
         try:
-            self._sniffer.stop()  # type: ignore[union-attr]
+            sniffer.stop(join=False)  # type: ignore[arg-type]
+        except TypeError:
+            try:
+                sniffer.stop()  # type: ignore[call-arg]
+            except Exception:
+                self._on_error("패킷 캡쳐 중지를 완료하지 못했습니다.")
+                return
         except Exception:
             self._on_error("패킷 캡쳐 중지를 완료하지 못했습니다.")
-        finally:
-            self._sniffer = None
+            return
+
+        self._join_sniffer_nonblocking(sniffer)
+
+    def _is_running(self, sniffer) -> bool:  # type: ignore[no-untyped-def]
+        return bool(sniffer and getattr(sniffer, "running", False))
+
+    def _join_sniffer_nonblocking(self, sniffer) -> None:  # type: ignore[no-untyped-def]
+        def _wait_for_stop() -> None:
+            try:
+                thread = getattr(sniffer, "thread", None)
+                if thread and thread.is_alive():
+                    thread.join(timeout=1.5)
+            except Exception:
+                # 조인 과정의 예외는 UI를 멈추지 않도록 무시
+                return
+
+        threading.Thread(target=_wait_for_stop, daemon=True).start()
