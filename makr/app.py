@@ -56,6 +56,51 @@ class DelayConfig:
     f1_newline_before_enter: Callable[[], int]
 
 
+@dataclass
+class UiTwoDelayConfig:
+    f4_between_pos11_pos12: Callable[[], int]
+    f4_before_enter: Callable[[], int]
+    f5_interval: Callable[[], int]
+    f6_interval: Callable[[], int]
+
+
+class RepeatingClickTask:
+    def __init__(self, status_fn: Callable[[str], None]) -> None:
+        self._thread: threading.Thread | None = None
+        self._stop_event = threading.Event()
+        self._status_fn = status_fn
+
+    def start(self, point: tuple[int, int], delay_ms: int, *, start_message: str, stop_message: str) -> None:
+        self.stop()
+        delay_sec = max(delay_ms, 0) / 1000
+        self._stop_event.clear()
+
+        def _run() -> None:
+            self._status_fn(start_message)
+            try:
+                while not self._stop_event.is_set():
+                    pyautogui.click(*point)
+                    if self._stop_event.wait(delay_sec):
+                        break
+            finally:
+                self._status_fn(stop_message)
+
+        self._thread = threading.Thread(target=_run, daemon=True)
+        self._thread.start()
+
+    def stop(self, *, stop_message: str | None = None) -> bool:
+        if not self.is_running:
+            return False
+        self._stop_event.set()
+        if stop_message:
+            self._status_fn(stop_message)
+        return True
+
+    @property
+    def is_running(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
+
 class MacroController:
     """실행 순서를 관리하고 GUI 콜백을 제공합니다."""
 
@@ -159,6 +204,8 @@ def build_gui() -> None:
     saved_state = load_app_state()
 
     status_var = tk.StringVar()
+    devlogic_alert_var = tk.StringVar(value="")
+    ui_mode = tk.StringVar(value=str(saved_state.get("ui_mode", "1")))
     f2_before_esc_var = tk.StringVar(value=str(saved_state.get("delay_f2_before_esc_ms", "0")))
     f2_before_pos1_var = tk.StringVar(value=str(saved_state.get("delay_f2_before_pos1_ms", "0")))
     f2_before_pos2_var = tk.StringVar(
@@ -175,13 +222,22 @@ def build_gui() -> None:
     f1_newline_before_enter_var = tk.StringVar(
         value=str(saved_state.get("delay_f1_newline_before_enter_ms", "0"))
     )
+    f4_between_pos11_pos12_var = tk.StringVar(
+        value=str(saved_state.get("delay_f4_between_pos11_pos12_ms", "0"))
+    )
+    f4_before_enter_var = tk.StringVar(
+        value=str(saved_state.get("delay_f4_before_enter_ms", "0"))
+    )
+    f5_interval_var = tk.StringVar(value=str(saved_state.get("delay_f5_interval_ms", "100")))
+    f6_interval_var = tk.StringVar(value=str(saved_state.get("delay_f6_interval_ms", "100")))
     channel_watch_interval_var = tk.StringVar(
         value=str(saved_state.get("channel_watch_interval_ms", "200"))
     )
     channel_timeout_var = tk.StringVar(value=str(saved_state.get("channel_timeout_ms", "5000")))
     newline_var = tk.BooleanVar(value=bool(saved_state.get("newline_after_pos2", False)))
 
-    entries: dict[str, tuple[tk.Entry, tk.Entry]] = {}
+    entries_ui1: dict[str, tuple[tk.Entry, tk.Entry]] = {}
+    entries_ui2: dict[str, tuple[tk.Entry, tk.Entry]] = {}
     capture_listener: mouse.Listener | None = None
     hotkey_listener: keyboard.Listener | None = None
 
@@ -206,8 +262,8 @@ def build_gui() -> None:
     def get_channel_timeout_ms() -> int:
         return _parse_delay_ms(channel_timeout_var, "채널 타임아웃", 5000)
 
-    def add_coordinate_row(label_text: str, key: str) -> None:
-        frame = tk.Frame(root)
+    def add_coordinate_row(parent: tk.Widget, label_text: str, key: str, target_entries: dict[str, tuple[tk.Entry, tk.Entry]]) -> None:
+        frame = tk.Frame(parent)
         frame.pack(fill="x", padx=10, pady=5)
 
         tk.Label(frame, text=label_text, width=8, anchor="w").pack(side="left")
@@ -219,7 +275,7 @@ def build_gui() -> None:
         y_entry.pack(side="left")
         y_entry.insert(0, str(saved_state.get("coordinates", {}).get(key, {}).get("y", "0")))
 
-        entries[key] = (x_entry, y_entry)
+        target_entries[key] = (x_entry, y_entry)
 
         def start_capture() -> None:
             nonlocal capture_listener
@@ -241,7 +297,7 @@ def build_gui() -> None:
 
         def finalize_capture(target_key: str, x_val: int, y_val: int) -> None:
             nonlocal capture_listener
-            x_entry_local, y_entry_local = entries[target_key]
+            x_entry_local, y_entry_local = target_entries[target_key]
             x_entry_local.delete(0, tk.END)
             x_entry_local.insert(0, str(x_val))
             y_entry_local.delete(0, tk.END)
@@ -254,15 +310,97 @@ def build_gui() -> None:
         register_button.pack(side="left", padx=(6, 0))
 
     top_bar = tk.Frame(root)
-    top_bar.pack(fill="x", pady=(6, 0))
-    tk.Checkbutton(top_bar, text="줄바꿈", variable=newline_var).pack(side="right", padx=(0, 12))
+    top_bar.pack(fill="x", pady=(6, 4))
+    action_frame = tk.Frame(top_bar)
+    action_frame.pack(side="right", padx=6)
 
-    tk.Label(root, text="좌표는 화면 기준 픽셀 단위로 입력하세요 (X, Y).", fg="#444").pack(pady=(6, 0))
+    content_frame = tk.Frame(root)
+    content_frame.pack(fill="both", expand=True)
 
-    add_coordinate_row("pos1", "pos1")
-    add_coordinate_row("pos2", "pos2")
-    add_coordinate_row("pos3", "pos3")
-    add_coordinate_row("pos4", "pos4")
+    ui1_frame = tk.Frame(content_frame)
+    ui2_frame = tk.Frame(content_frame)
+
+    def add_step_delay_row(parent: tk.Widget, title: str, steps: list[tuple[tk.StringVar, str]]) -> None:
+        row = tk.Frame(parent)
+        row.pack(fill="x", pady=3)
+
+        tk.Label(row, text=title, width=10, anchor="w").pack(side="left")
+        for idx, (var, label_text) in enumerate(steps):
+            tk.Entry(row, textvariable=var, width=6).pack(side="left", padx=(0, 4))
+            tk.Label(row, text=label_text).pack(side="left", padx=(0, 4))
+            if idx < len(steps) - 1:
+                tk.Label(row, text="-").pack(side="left", padx=(0, 4))
+
+    def add_single_delay_row(parent: tk.Widget, title: str, var: tk.StringVar, suffix: str = "ms") -> None:
+        row = tk.Frame(parent)
+        row.pack(fill="x", pady=3)
+
+        tk.Label(row, text=title, width=10, anchor="w").pack(side="left")
+        tk.Entry(row, textvariable=var, width=8).pack(side="left", padx=(0, 6))
+        if suffix:
+            tk.Label(row, text=suffix).pack(side="left")
+
+    # UI 1
+    ui1_top = tk.Frame(ui1_frame)
+    ui1_top.pack(fill="x", pady=(0, 4))
+    tk.Checkbutton(ui1_top, text="줄바꿈", variable=newline_var).pack(side="right", padx=(0, 12))
+
+    add_coordinate_row(ui1_frame, "pos1", "pos1", entries_ui1)
+    add_coordinate_row(ui1_frame, "pos2", "pos2", entries_ui1)
+    add_coordinate_row(ui1_frame, "pos3", "pos3", entries_ui1)
+    add_coordinate_row(ui1_frame, "pos4", "pos4", entries_ui1)
+
+    delay_frame_ui1 = tk.LabelFrame(ui1_frame, text="딜레이 설정")
+    delay_frame_ui1.pack(fill="x", padx=10, pady=(0, 10))
+
+    add_step_delay_row(
+        delay_frame_ui1,
+        "(F2)",
+        [
+            (f2_before_esc_var, "Esc"),
+            (f2_before_pos1_var, "pos1"),
+            (f2_before_pos2_var, "pos2"),
+        ],
+    )
+    add_single_delay_row(delay_frame_ui1, "채널감시주기", channel_watch_interval_var, "ms (기본 200)")
+    add_single_delay_row(delay_frame_ui1, "채널타임아웃", channel_timeout_var, "ms (기본 5000)")
+    add_step_delay_row(
+        delay_frame_ui1,
+        "(F1-1)",
+        [
+            (f1_before_pos3_var, "pos3"),
+            (f1_before_enter_var, "Enter"),
+        ],
+    )
+    add_step_delay_row(
+        delay_frame_ui1,
+        "(F1-2)",
+        [
+            (f1_newline_before_pos4_var, "pos4"),
+            (f1_newline_before_pos3_var, "pos3"),
+            (f1_newline_before_enter_var, "Enter"),
+        ],
+    )
+
+    # UI 2
+    add_coordinate_row(ui2_frame, "pos11", "pos11", entries_ui2)
+    add_coordinate_row(ui2_frame, "pos12", "pos12", entries_ui2)
+    add_coordinate_row(ui2_frame, "pos13", "pos13", entries_ui2)
+    add_coordinate_row(ui2_frame, "pos14", "pos14", entries_ui2)
+
+    delay_frame_ui2 = tk.LabelFrame(ui2_frame, text="딜레이 설정")
+    delay_frame_ui2.pack(fill="x", padx=10, pady=(0, 10))
+
+    add_step_delay_row(
+        delay_frame_ui2,
+        "(F4)",
+        [
+            (f4_between_pos11_pos12_var, "pos11-pos12"),
+            (f4_before_enter_var, "Enter 전"),
+        ],
+    )
+    add_single_delay_row(delay_frame_ui2, "(F5)", f5_interval_var, "ms (클릭 간격)")
+    add_single_delay_row(delay_frame_ui2, "(F6)", f6_interval_var, "ms (클릭 간격)")
 
     delay_config = DelayConfig(
         f2_before_esc=_make_delay_getter(f2_before_esc_var, "(F2) Esc 전", 0),
@@ -281,68 +419,125 @@ def build_gui() -> None:
         ),
     )
 
-    controller = MacroController(entries, status_var, delay_config)
+    controller = MacroController(entries_ui1, status_var, delay_config)
 
-    button_frame = tk.Frame(root)
-    button_frame.pack(pady=10)
+    ui_toggle_button = tk.Button(top_bar, text="UI 전환", width=14)
+    ui_toggle_button.pack(side="left", padx=(10, 4))
 
-    test_button = tk.Button(button_frame, text="테스트", width=12)
-    test_button.pack(side="right", padx=5)
+    test_button = tk.Button(action_frame, text="테스트", width=12)
+    test_button.pack(side="right", padx=(0, 4))
 
-    packet_capture_button = tk.Button(button_frame, text="패킷캡쳐 시작", width=12)
-    packet_capture_button.pack(side="right", padx=5)
-
-    delay_frame = tk.LabelFrame(root, text="딜레이 설정")
-    delay_frame.pack(fill="x", padx=10, pady=(0, 10))
-
-    def add_step_delay_row(title: str, steps: list[tuple[tk.StringVar, str]]) -> None:
-        row = tk.Frame(delay_frame)
-        row.pack(fill="x", pady=3)
-
-        tk.Label(row, text=title, width=8, anchor="w").pack(side="left")
-        for idx, (var, label_text) in enumerate(steps):
-            tk.Entry(row, textvariable=var, width=6).pack(side="left", padx=(0, 4))
-            tk.Label(row, text=label_text).pack(side="left", padx=(0, 4))
-            if idx < len(steps) - 1:
-                tk.Label(row, text="-").pack(side="left", padx=(0, 4))
-
-    def add_single_delay_row(title: str, var: tk.StringVar, suffix: str = "ms") -> None:
-        row = tk.Frame(delay_frame)
-        row.pack(fill="x", pady=3)
-
-        tk.Label(row, text=title, width=8, anchor="w").pack(side="left")
-        tk.Entry(row, textvariable=var, width=8).pack(side="left", padx=(0, 6))
-        if suffix:
-            tk.Label(row, text=suffix).pack(side="left")
-
-    add_step_delay_row(
-        "(F2)",
-        [
-            (f2_before_esc_var, "Esc"),
-            (f2_before_pos1_var, "pos1"),
-            (f2_before_pos2_var, "pos2"),
-        ],
-    )
-    add_single_delay_row("채널감시주기", channel_watch_interval_var, "ms (기본 200)")
-    add_single_delay_row("채널타임아웃", channel_timeout_var, "ms (기본 5000)")
-    add_step_delay_row(
-        "(F1-1)",
-        [
-            (f1_before_pos3_var, "pos3"),
-            (f1_before_enter_var, "Enter"),
-        ],
-    )
-    add_step_delay_row(
-        "(F1-2)",
-        [
-            (f1_newline_before_pos4_var, "pos4"),
-            (f1_newline_before_pos3_var, "pos3"),
-            (f1_newline_before_enter_var, "Enter"),
-        ],
-    )
+    packet_capture_button = tk.Button(action_frame, text="패킷캡쳐 시작", width=12)
+    packet_capture_button.pack(side="right", padx=(0, 4))
 
     status_label = tk.Label(root, textvariable=status_var, fg="#006400")
     status_label.pack(pady=(0, 4))
+    devlogic_label = tk.Label(root, textvariable=devlogic_alert_var, fg="red")
+    devlogic_label.pack(pady=(0, 6))
+
+    def set_status_async(message: str) -> None:
+        root.after(0, status_var.set, message)
+
+    ui_two_delay_config = UiTwoDelayConfig(
+        f4_between_pos11_pos12=_make_delay_getter(
+            f4_between_pos11_pos12_var, "(F4) pos11-pos12 전", 0
+        ),
+        f4_before_enter=_make_delay_getter(f4_before_enter_var, "(F4) Enter 전", 0),
+        f5_interval=_make_delay_getter(f5_interval_var, "(F5) 반복 간격", 100),
+        f6_interval=_make_delay_getter(f6_interval_var, "(F6) 반복 간격", 100),
+    )
+
+    ui1_frame.pack_forget()
+    ui2_frame.pack_forget()
+
+    def switch_ui(mode: str) -> None:
+        target = "2" if mode == "2" else "1"
+        ui_mode.set(target)
+        ui1_frame.pack_forget()
+        ui2_frame.pack_forget()
+        if target == "1":
+            ui1_frame.pack(fill="both", expand=True)
+            ui_toggle_button.configure(text="2번 UI로 전환")
+        else:
+            ui2_frame.pack(fill="both", expand=True)
+            ui_toggle_button.configure(text="1번 UI로 전환")
+
+    def toggle_ui() -> None:
+        switch_ui("2" if ui_mode.get() == "1" else "1")
+
+    ui_toggle_button.configure(command=toggle_ui)
+    switch_ui(ui_mode.get())
+
+    ui2_repeater_f5 = RepeatingClickTask(set_status_async)
+    ui2_repeater_f6 = RepeatingClickTask(set_status_async)
+    devlogic_last_detected_at: float | None = None
+
+    def _get_ui2_point(key: str, label: str) -> tuple[int, int] | None:
+        x_entry, y_entry = entries_ui2[key]
+        try:
+            x_val = int(x_entry.get())
+            y_val = int(y_entry.get())
+        except ValueError:
+            messagebox.showerror("좌표 오류", f"{label} 좌표를 정수로 입력해주세요.")
+            return None
+        return x_val, y_val
+
+    def _sleep_ms_ui2(delay_ms: int) -> None:
+        delay_sec = max(delay_ms, 0) / 1000
+        if delay_sec:
+            time.sleep(delay_sec)
+
+    def run_ui2_f4() -> None:
+        pos11 = _get_ui2_point("pos11", "pos11")
+        pos12 = _get_ui2_point("pos12", "pos12")
+        if pos11 is None or pos12 is None:
+            return
+        if ui2_repeater_f6.stop():
+            set_status_async("F6 반복 클릭을 중지했습니다.")
+
+        delay_between = ui_two_delay_config.f4_between_pos11_pos12()
+        delay_before_enter = ui_two_delay_config.f4_before_enter()
+
+        def _run() -> None:
+            set_status_async("F4: pos11 → pos12 실행 중…")
+            pyautogui.click(*pos11)
+            _sleep_ms_ui2(delay_between)
+            pyautogui.click(*pos12)
+            _sleep_ms_ui2(delay_before_enter)
+            pyautogui.press("enter")
+            set_status_async("F4: 실행 완료")
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def run_ui2_f5() -> None:
+        pos13 = _get_ui2_point("pos13", "pos13")
+        if pos13 is None:
+            return
+        interval_ms = ui_two_delay_config.f5_interval()
+        ui2_repeater_f5.start(
+            pos13,
+            interval_ms,
+            start_message="F5: pos13 반복 클릭 시작",
+            stop_message="F5: 중지되었습니다.",
+        )
+
+    def run_ui2_f6() -> None:
+        if ui2_repeater_f6.is_running:
+            ui2_repeater_f6.stop(stop_message="F6: 중지되었습니다.")
+            return
+
+        pos14 = _get_ui2_point("pos14", "pos14")
+        if pos14 is None:
+            return
+        interval_ms = ui_two_delay_config.f6_interval()
+        if ui2_repeater_f5.stop():
+            set_status_async("F5: 중지되었습니다.")
+        ui2_repeater_f6.start(
+            pos14,
+            interval_ms,
+            start_message="F6: pos14 반복 클릭 시작",
+            stop_message="F6: 중지되었습니다.",
+        )
 
     test_window: tk.Toplevel | None = None
     test_treeview: ttk.Treeview | None = None
@@ -409,10 +604,11 @@ def build_gui() -> None:
 
     def collect_app_state() -> dict:
         coordinates: dict[str, dict[str, str]] = {}
-        for key, (x_entry, y_entry) in entries.items():
+        for key, (x_entry, y_entry) in {**entries_ui1, **entries_ui2}.items():
             coordinates[key] = {"x": x_entry.get(), "y": y_entry.get()}
         return {
             "coordinates": coordinates,
+            "ui_mode": ui_mode.get(),
             "delay_f2_before_esc_ms": f2_before_esc_var.get(),
             "delay_f2_before_pos1_ms": f2_before_pos1_var.get(),
             "delay_f2_before_pos2_ms": f2_before_pos2_var.get(),
@@ -421,6 +617,10 @@ def build_gui() -> None:
             "delay_f1_newline_before_pos4_ms": f1_newline_before_pos4_var.get(),
             "delay_f1_newline_before_pos3_ms": f1_newline_before_pos3_var.get(),
             "delay_f1_newline_before_enter_ms": f1_newline_before_enter_var.get(),
+            "delay_f4_between_pos11_pos12_ms": f4_between_pos11_pos12_var.get(),
+            "delay_f4_before_enter_ms": f4_before_enter_var.get(),
+            "delay_f5_interval_ms": f5_interval_var.get(),
+            "delay_f6_interval_ms": f6_interval_var.get(),
             "channel_watch_interval_ms": channel_watch_interval_var.get(),
             "channel_timeout_ms": channel_timeout_var.get(),
             "newline_after_pos2": newline_var.get(),
@@ -801,7 +1001,21 @@ def build_gui() -> None:
     channel_segment_recorder = ChannelSegmentRecorder(handle_captured_pattern)
 
     def process_packet_detection(text: str) -> None:
+        nonlocal devlogic_last_detected_at
+        if "DevLogic" in text:
+            devlogic_last_detected_at = time.time()
         channel_segment_recorder.feed(text)
+
+    def poll_devlogic_alert() -> None:
+        interval_ms = get_channel_watch_interval_ms()
+        now = time.time()
+        visible = (
+            ui_mode.get() == "2"
+            and devlogic_last_detected_at is not None
+            and now - devlogic_last_detected_at <= max(interval_ms, 200) / 1000
+        )
+        devlogic_alert_var.set("채널 감지" if visible else "")
+        root.after(max(interval_ms, 50), poll_devlogic_alert)
 
     packet_manager = PacketCaptureManager(
         on_packet=lambda text: root.after(0, process_packet_detection, text),
@@ -852,19 +1066,35 @@ def build_gui() -> None:
     packet_capture_button.configure(command=toggle_packet_capture)
 
     test_button.configure(command=show_test_window)
+    poll_devlogic_alert()
+
+    def run_on_ui(mode: str, action: Callable[[], None]) -> None:
+        def _runner() -> None:
+            switch_ui(mode)
+            action()
+        root.after(0, _runner)
 
     def on_hotkey_press(key: keyboard.Key) -> None:
         if key == keyboard.Key.f1:
-            root.after(0, controller.run_step)
+            run_on_ui("1", controller.run_step)
         elif key == keyboard.Key.f2:
-            root.after(0, controller.reset_and_run_first)
+            run_on_ui("1", controller.reset_and_run_first)
         elif key == keyboard.Key.f3:
-            if channel_detection_sequence.running:
-                channel_detection_sequence.stop()
-                status_var.set("F3 매크로가 종료되었습니다.")
-                controller._update_status()
-            else:
-                channel_detection_sequence.start(newline_var.get())
+            def _toggle_f3() -> None:
+                switch_ui("1")
+                if channel_detection_sequence.running:
+                    channel_detection_sequence.stop()
+                    status_var.set("F3 매크로가 종료되었습니다.")
+                    controller._update_status()
+                else:
+                    channel_detection_sequence.start(newline_var.get())
+            root.after(0, _toggle_f3)
+        elif key == keyboard.Key.f4:
+            run_on_ui("2", run_ui2_f4)
+        elif key == keyboard.Key.f5:
+            run_on_ui("2", run_ui2_f5)
+        elif key == keyboard.Key.f6:
+            run_on_ui("2", run_ui2_f6)
 
     def start_hotkey_listener() -> None:
         nonlocal hotkey_listener
@@ -878,6 +1108,8 @@ def build_gui() -> None:
         if hotkey_listener is not None:
             hotkey_listener.stop()
         channel_detection_sequence.stop()
+        ui2_repeater_f5.stop()
+        ui2_repeater_f6.stop()
         stop_packet_capture()
         root.destroy()
 
