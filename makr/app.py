@@ -477,7 +477,9 @@ def build_gui() -> None:
     devlogic_last_packet = ""
 
     def _format_devlogic_packet(packet_text: str) -> str:
-        sanitized = re.sub(r"[^0-9A-Za-z가-힣]", "-", packet_text)
+        start = packet_text.find("DevLogic")
+        trimmed = packet_text[start:] if start != -1 else packet_text
+        sanitized = re.sub(r"[^0-9A-Za-z가-힣]", "-", trimmed)
         return sanitized[:20]
 
     def _get_ui2_point(key: str, label: str) -> tuple[int, int] | None:
