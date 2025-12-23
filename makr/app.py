@@ -51,6 +51,7 @@ class DelayConfig:
     f2_before_pos2: Callable[[], int]
     f1_before_pos3: Callable[[], int]
     f1_before_enter: Callable[[], int]
+    f1_repeat_count: Callable[[], int]
     f1_newline_before_pos4: Callable[[], int]
     f1_newline_before_pos3: Callable[[], int]
     f1_newline_before_enter: Callable[[], int]
@@ -178,22 +179,25 @@ class MacroController:
         pos3 = self._get_point("pos3")
         if pos3 is None:
             return
+        repeat_count = max(self.delay_config.f1_repeat_count(), 1)
         if newline_mode:
             pos4 = self._get_point("pos4")
             if pos4 is None:
                 return
-            self._sleep_ms(self.delay_config.f1_newline_before_pos4())
-            self._click_point(pos4, label="2단계 pos4")
-            self._sleep_ms(self.delay_config.f1_newline_before_pos3())
-        else:
-            self._sleep_ms(self.delay_config.f1_before_pos3())
-        self._click_point(pos3, label="2단계 pos3")
-        self._sleep_ms(
-            self.delay_config.f1_newline_before_enter()
-            if newline_mode
-            else self.delay_config.f1_before_enter()
-        )
-        self._press_key("enter", label="2단계 Enter")
+        for _ in range(repeat_count):
+            if newline_mode:
+                self._sleep_ms(self.delay_config.f1_newline_before_pos4())
+                self._click_point(pos4, label="2단계 pos4")
+                self._sleep_ms(self.delay_config.f1_newline_before_pos3())
+            else:
+                self._sleep_ms(self.delay_config.f1_before_pos3())
+            self._click_point(pos3, label="2단계 pos3")
+            self._sleep_ms(
+                self.delay_config.f1_newline_before_enter()
+                if newline_mode
+                else self.delay_config.f1_before_enter()
+            )
+            self._press_key("enter", label="2단계 Enter")
 
 
 def build_gui() -> None:
@@ -214,6 +218,7 @@ def build_gui() -> None:
     )
     f1_before_pos3_var = tk.StringVar(value=str(saved_state.get("delay_f1_before_pos3_ms", "0")))
     f1_before_enter_var = tk.StringVar(value=str(saved_state.get("delay_f1_before_enter_ms", "0")))
+    f1_repeat_count_var = tk.StringVar(value=str(saved_state.get("f1_repeat_count", "1")))
     f1_newline_before_pos4_var = tk.StringVar(
         value=str(saved_state.get("delay_f1_newline_before_pos4_ms", "0"))
     )
@@ -256,6 +261,21 @@ def build_gui() -> None:
 
     def _make_delay_getter(var: tk.StringVar, label: str, fallback: int) -> Callable[[], int]:
         return lambda: _parse_delay_ms(var, label, fallback)
+
+    def _parse_positive_int(var: tk.StringVar, label: str, fallback: int) -> int:
+        try:
+            value = int(float(var.get()))
+        except (tk.TclError, ValueError):
+            messagebox.showerror(f"{label} 오류", f"{label}를 숫자로 입력하세요.")
+            value = fallback
+        if value < 1:
+            messagebox.showerror(f"{label} 오류", f"{label}는 1 이상이어야 합니다.")
+            value = 1
+        var.set(str(value))
+        return value
+
+    def _make_positive_int_getter(var: tk.StringVar, label: str, fallback: int) -> Callable[[], int]:
+        return lambda: _parse_positive_int(var, label, fallback)
 
     def get_channel_watch_interval_ms() -> int:
         return _parse_delay_ms(channel_watch_interval_var, "채널 감시 주기", 200)
@@ -373,6 +393,7 @@ def build_gui() -> None:
             (f1_before_enter_var, "Enter"),
         ],
     )
+    add_single_delay_row(delay_frame_ui1, "F1 반복", f1_repeat_count_var, "회")
     add_step_delay_row(
         delay_frame_ui1,
         "(F1-2)",
@@ -409,6 +430,7 @@ def build_gui() -> None:
         f2_before_pos2=_make_delay_getter(f2_before_pos2_var, "(F2) pos2 전", 100),
         f1_before_pos3=_make_delay_getter(f1_before_pos3_var, "(F1-1) pos3 전", 0),
         f1_before_enter=_make_delay_getter(f1_before_enter_var, "(F1-1) Enter 전", 0),
+        f1_repeat_count=_make_positive_int_getter(f1_repeat_count_var, "(F1) 반복 횟수", 1),
         f1_newline_before_pos4=_make_delay_getter(
             f1_newline_before_pos4_var, "(F1-2) pos4 전", 0
         ),
@@ -624,6 +646,7 @@ def build_gui() -> None:
             "delay_f2_before_pos2_ms": f2_before_pos2_var.get(),
             "delay_f1_before_pos3_ms": f1_before_pos3_var.get(),
             "delay_f1_before_enter_ms": f1_before_enter_var.get(),
+            "f1_repeat_count": f1_repeat_count_var.get(),
             "delay_f1_newline_before_pos4_ms": f1_newline_before_pos4_var.get(),
             "delay_f1_newline_before_pos3_ms": f1_newline_before_pos3_var.get(),
             "delay_f1_newline_before_enter_ms": f1_newline_before_enter_var.get(),
