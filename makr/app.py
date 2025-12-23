@@ -205,6 +205,7 @@ def build_gui() -> None:
 
     status_var = tk.StringVar()
     devlogic_alert_var = tk.StringVar(value="")
+    devlogic_packet_var = tk.StringVar(value="")
     ui_mode = tk.StringVar(value=str(saved_state.get("ui_mode", "1")))
     f2_before_esc_var = tk.StringVar(value=str(saved_state.get("delay_f2_before_esc_ms", "0")))
     f2_before_pos1_var = tk.StringVar(value=str(saved_state.get("delay_f2_before_pos1_ms", "0")))
@@ -433,7 +434,9 @@ def build_gui() -> None:
     status_label = tk.Label(root, textvariable=status_var, fg="#006400")
     status_label.pack(pady=(0, 4))
     devlogic_label = tk.Label(root, textvariable=devlogic_alert_var, fg="red")
-    devlogic_label.pack(pady=(0, 6))
+    devlogic_label.pack(pady=(0, 2))
+    devlogic_packet_label = tk.Label(root, textvariable=devlogic_packet_var, fg="red")
+    devlogic_packet_label.pack(pady=(0, 6))
 
     def set_status_async(message: str) -> None:
         root.after(0, status_var.set, message)
@@ -471,6 +474,11 @@ def build_gui() -> None:
     ui2_repeater_f5 = RepeatingClickTask(set_status_async)
     ui2_repeater_f6 = RepeatingClickTask(set_status_async)
     devlogic_last_detected_at: float | None = None
+    devlogic_last_packet = ""
+
+    def _format_devlogic_packet(packet_text: str) -> str:
+        sanitized = re.sub(r"[^0-9A-Za-z가-힣]", "-", packet_text)
+        return sanitized[:20]
 
     def _get_ui2_point(key: str, label: str) -> tuple[int, int] | None:
         x_entry, y_entry = entries_ui2[key]
@@ -1001,20 +1009,24 @@ def build_gui() -> None:
     channel_segment_recorder = ChannelSegmentRecorder(handle_captured_pattern)
 
     def process_packet_detection(text: str) -> None:
-        nonlocal devlogic_last_detected_at
+        nonlocal devlogic_last_detected_at, devlogic_last_packet
         if "DevLogic" in text:
             devlogic_last_detected_at = time.time()
+            devlogic_last_packet = _format_devlogic_packet(text)
+            devlogic_packet_var.set(devlogic_last_packet)
         channel_segment_recorder.feed(text)
 
     def poll_devlogic_alert() -> None:
         interval_ms = get_channel_watch_interval_ms()
         now = time.time()
+        alert_duration_sec = 3
         visible = (
             ui_mode.get() == "2"
             and devlogic_last_detected_at is not None
-            and now - devlogic_last_detected_at <= max(interval_ms, 200) / 1000
+            and now - devlogic_last_detected_at <= alert_duration_sec
         )
         devlogic_alert_var.set("채널 감지" if visible else "")
+        devlogic_packet_var.set(devlogic_last_packet if visible else "")
         root.after(max(interval_ms, 50), poll_devlogic_alert)
 
     packet_manager = PacketCaptureManager(
