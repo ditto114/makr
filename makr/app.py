@@ -102,6 +102,49 @@ class RepeatingClickTask:
         return self._thread is not None and self._thread.is_alive()
 
 
+class RepeatingActionTask:
+    def __init__(self, status_fn: Callable[[str], None]) -> None:
+        self._thread: threading.Thread | None = None
+        self._stop_event = threading.Event()
+        self._status_fn = status_fn
+
+    def start(
+        self,
+        action: Callable[[], None],
+        interval_sec: float,
+        *,
+        start_message: str,
+        stop_message: str,
+    ) -> None:
+        self.stop()
+        self._stop_event.clear()
+
+        def _run() -> None:
+            self._status_fn(start_message)
+            try:
+                while not self._stop_event.is_set():
+                    action()
+                    if self._stop_event.wait(max(interval_sec, 0)):
+                        break
+            finally:
+                self._status_fn(stop_message)
+
+        self._thread = threading.Thread(target=_run, daemon=True)
+        self._thread.start()
+
+    def stop(self, *, stop_message: str | None = None) -> bool:
+        if not self.is_running:
+            return False
+        self._stop_event.set()
+        if stop_message:
+            self._status_fn(stop_message)
+        return True
+
+    @property
+    def is_running(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
+
 class MacroController:
     """실행 순서를 관리하고 GUI 콜백을 제공합니다."""
 
@@ -249,6 +292,9 @@ def build_gui() -> None:
     )
     channel_timeout_var = tk.StringVar(value=str(saved_state.get("channel_timeout_ms", "5000")))
     newline_var = tk.BooleanVar(value=bool(saved_state.get("newline_after_pos2", False)))
+    ui2_automation_var = tk.BooleanVar(
+        value=bool(saved_state.get("ui2_automation_enabled", False))
+    )
 
     entries_ui1: dict[str, tuple[tk.Entry, tk.Entry]] = {}
     entries_ui2: dict[str, tuple[tk.Entry, tk.Entry]] = {}
@@ -415,6 +461,13 @@ def build_gui() -> None:
     )
 
     # UI 2
+    ui2_top = tk.Frame(ui2_frame)
+    ui2_top.pack(fill="x", pady=(0, 4))
+    ui2_automation_checkbox = tk.Checkbutton(
+        ui2_top, text="자동화", variable=ui2_automation_var
+    )
+    ui2_automation_checkbox.pack(side="right", padx=(0, 12))
+
     add_coordinate_row(ui2_frame, "pos11", "pos11", entries_ui2)
     add_coordinate_row(ui2_frame, "pos12", "pos12", entries_ui2)
     add_coordinate_row(ui2_frame, "pos13", "pos13", entries_ui2)
@@ -616,14 +669,24 @@ def build_gui() -> None:
 
     ui2_repeater_f5 = RepeatingClickTask(set_status_async)
     ui2_repeater_f6 = RepeatingClickTask(set_status_async)
+    ui2_f4_automation_task = RepeatingActionTask(set_status_async)
     devlogic_last_detected_at: float | None = None
     devlogic_last_packet = ""
+    devlogic_last_is_new_channel = False
 
-    def _format_devlogic_packet(packet_text: str) -> str:
+    def _format_devlogic_packet(packet_text: str) -> tuple[str, bool]:
         start = packet_text.find("DevLogic")
-        trimmed = packet_text[start:] if start != -1 else packet_text
-        sanitized = re.sub(r"[^0-9A-Za-z가-힣]", "-", trimmed)
-        return sanitized[:20]
+        if start == -1:
+            return "", False
+        segment_start = start + len("DevLogic")
+        end = packet_text.find("ExpDrop", segment_start)
+        if end == -1:
+            return "", False
+        segment = packet_text[segment_start:end]
+        sanitized = re.sub(r"[^0-9A-Za-z가-힣]", "-", segment)
+        display = sanitized[:20]
+        is_new_channel = bool(display) and display.strip("-") == ""
+        return display, is_new_channel
 
     def _get_ui2_point(key: str, label: str) -> tuple[int, int] | None:
         x_entry, y_entry = entries_ui2[key]
@@ -640,14 +703,11 @@ def build_gui() -> None:
         if delay_sec:
             time.sleep(delay_sec)
 
-    def run_ui2_f4() -> None:
+    def _build_ui2_f4_action() -> Callable[[], None] | None:
         pos11 = _get_ui2_point("pos11", "pos11")
         pos12 = _get_ui2_point("pos12", "pos12")
         if pos11 is None or pos12 is None:
-            return
-        if ui2_repeater_f6.stop():
-            set_status_async("F6 반복 클릭을 중지했습니다.")
-
+            return None
         delay_between = ui_two_delay_config.f4_between_pos11_pos12()
         delay_before_enter = ui_two_delay_config.f4_before_enter()
 
@@ -660,7 +720,34 @@ def build_gui() -> None:
             pyautogui.press("enter")
             set_status_async("F4: 실행 완료")
 
-        threading.Thread(target=_run, daemon=True).start()
+        return _run
+
+    def run_ui2_f4() -> None:
+        if ui2_automation_var.get():
+            if ui2_f4_automation_task.is_running:
+                ui2_f4_automation_task.stop(stop_message="자동화 모드: 중지되었습니다.")
+                return
+            action = _build_ui2_f4_action()
+            if action is None:
+                return
+            if ui2_repeater_f6.stop():
+                set_status_async("F6 반복 클릭을 중지했습니다.")
+            ui2_f4_automation_task.start(
+                action,
+                0.5,
+                start_message="자동화 모드: F4 반복 시작",
+                stop_message="자동화 모드: 중지되었습니다.",
+            )
+            return
+
+        if ui2_f4_automation_task.stop():
+            set_status_async("자동화 모드: 중지되었습니다.")
+        action = _build_ui2_f4_action()
+        if action is None:
+            return
+        if ui2_repeater_f6.stop():
+            set_status_async("F6 반복 클릭을 중지했습니다.")
+        threading.Thread(target=action, daemon=True).start()
 
     def run_ui2_f5() -> None:
         pos13 = _get_ui2_point("pos13", "pos13")
@@ -674,10 +761,12 @@ def build_gui() -> None:
             stop_message="F5: 중지되었습니다.",
         )
 
-    def run_ui2_f6() -> None:
-        if ui2_repeater_f6.is_running:
+    def run_ui2_f6(*, force_start: bool = False) -> None:
+        if ui2_repeater_f6.is_running and not force_start:
             ui2_repeater_f6.stop(stop_message="F6: 중지되었습니다.")
             return
+        if ui2_repeater_f6.is_running and force_start:
+            ui2_repeater_f6.stop(stop_message="F6: 중지되었습니다.")
 
         pos14 = _get_ui2_point("pos14", "pos14")
         if pos14 is None:
@@ -691,6 +780,13 @@ def build_gui() -> None:
             start_message="F6: pos14 반복 클릭 시작",
             stop_message="F6: 중지되었습니다.",
         )
+
+    def on_ui2_automation_toggle() -> None:
+        if not ui2_automation_var.get():
+            if ui2_f4_automation_task.stop():
+                set_status_async("자동화 모드: 중지되었습니다.")
+
+    ui2_automation_checkbox.configure(command=on_ui2_automation_toggle)
 
     test_window: tk.Toplevel | None = None
     test_treeview: ttk.Treeview | None = None
@@ -779,6 +875,7 @@ def build_gui() -> None:
             "channel_watch_interval_ms": channel_watch_interval_var.get(),
             "channel_timeout_ms": channel_timeout_var.get(),
             "newline_after_pos2": newline_var.get(),
+            "ui2_automation_enabled": ui2_automation_var.get(),
             "overlay_x": overlay_position["x"],
             "overlay_y": overlay_position["y"],
         }
@@ -1158,11 +1255,15 @@ def build_gui() -> None:
     channel_segment_recorder = ChannelSegmentRecorder(handle_captured_pattern)
 
     def process_packet_detection(text: str) -> None:
-        nonlocal devlogic_last_detected_at, devlogic_last_packet
+        nonlocal devlogic_last_detected_at, devlogic_last_packet, devlogic_last_is_new_channel
         if "DevLogic" in text:
             devlogic_last_detected_at = time.time()
-            devlogic_last_packet = _format_devlogic_packet(text)
+            devlogic_last_packet, devlogic_last_is_new_channel = _format_devlogic_packet(text)
             devlogic_packet_var.set(devlogic_last_packet)
+            if devlogic_last_is_new_channel and ui2_f4_automation_task.stop():
+                status_var.set("신규채널 감지: 자동화 모드를 중단하고 채널 감지를 대기합니다.")
+            run_on_ui("2", run_ui2_f5)
+            root.after(1000, lambda: run_on_ui("2", lambda: run_ui2_f6(force_start=True)))
         channel_segment_recorder.feed(text)
 
     def poll_devlogic_alert() -> None:
@@ -1174,7 +1275,10 @@ def build_gui() -> None:
             and devlogic_last_detected_at is not None
             and now - devlogic_last_detected_at <= alert_duration_sec
         )
-        devlogic_alert_var.set("채널 감지" if visible else "")
+        if visible:
+            devlogic_alert_var.set("신규채널!!" if devlogic_last_is_new_channel else "채널 감지")
+        else:
+            devlogic_alert_var.set("")
         devlogic_packet_var.set(devlogic_last_packet if visible else "")
         root.after(max(interval_ms, 50), poll_devlogic_alert)
 
@@ -1271,6 +1375,7 @@ def build_gui() -> None:
         if hotkey_listener is not None:
             hotkey_listener.stop()
         channel_detection_sequence.stop()
+        ui2_f4_automation_task.stop()
         ui2_repeater_f5.stop()
         ui2_repeater_f6.stop()
         stop_packet_capture()
