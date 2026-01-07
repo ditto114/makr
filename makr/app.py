@@ -673,20 +673,24 @@ def build_gui() -> None:
     devlogic_last_detected_at: float | None = None
     devlogic_last_packet = ""
     devlogic_last_is_new_channel = False
+    ui2_waiting_for_normal_channel = False
 
-    def _format_devlogic_packet(packet_text: str) -> tuple[str, bool]:
+    def _format_devlogic_packet(packet_text: str) -> tuple[str, bool, bool]:
         start = packet_text.find("DevLogic")
         if start == -1:
-            return "", False
+            return "", False, False
         segment_start = start + len("DevLogic")
         end = packet_text.find("ExpDrop", segment_start)
         if end == -1:
-            return "", False
+            return "", False, False
         segment = packet_text[segment_start:end]
         sanitized = re.sub(r"[^0-9A-Za-z가-힣]", "-", segment)
         display = sanitized[:20]
-        is_new_channel = bool(display) and display.strip("-") == ""
-        return display, is_new_channel
+        has_segment = bool(sanitized)
+        has_non_hyphen = bool(sanitized.strip("-"))
+        is_new_channel = has_segment and not has_non_hyphen
+        is_normal_channel = has_segment and has_non_hyphen
+        return display, is_new_channel, is_normal_channel
 
     def _get_ui2_point(key: str, label: str) -> tuple[int, int] | None:
         x_entry, y_entry = entries_ui2[key]
@@ -723,15 +727,18 @@ def build_gui() -> None:
         return _run
 
     def run_ui2_f4() -> None:
+        nonlocal ui2_waiting_for_normal_channel
         if ui2_automation_var.get():
             if ui2_f4_automation_task.is_running:
                 ui2_f4_automation_task.stop(stop_message="자동화 모드: 중지되었습니다.")
+                ui2_waiting_for_normal_channel = False
                 return
             action = _build_ui2_f4_action()
             if action is None:
                 return
             if ui2_repeater_f6.stop():
                 set_status_async("F6 반복 클릭을 중지했습니다.")
+            ui2_waiting_for_normal_channel = False
             ui2_f4_automation_task.start(
                 action,
                 0.5,
@@ -782,9 +789,11 @@ def build_gui() -> None:
         )
 
     def on_ui2_automation_toggle() -> None:
+        nonlocal ui2_waiting_for_normal_channel
         if not ui2_automation_var.get():
             if ui2_f4_automation_task.stop():
                 set_status_async("자동화 모드: 중지되었습니다.")
+            ui2_waiting_for_normal_channel = False
 
     ui2_automation_checkbox.configure(command=on_ui2_automation_toggle)
 
@@ -1255,15 +1264,31 @@ def build_gui() -> None:
     channel_segment_recorder = ChannelSegmentRecorder(handle_captured_pattern)
 
     def process_packet_detection(text: str) -> None:
-        nonlocal devlogic_last_detected_at, devlogic_last_packet, devlogic_last_is_new_channel
+        nonlocal devlogic_last_detected_at
+        nonlocal devlogic_last_packet
+        nonlocal devlogic_last_is_new_channel
+        nonlocal ui2_waiting_for_normal_channel
         if "DevLogic" in text:
             devlogic_last_detected_at = time.time()
-            devlogic_last_packet, devlogic_last_is_new_channel = _format_devlogic_packet(text)
+            (
+                devlogic_last_packet,
+                devlogic_last_is_new_channel,
+                devlogic_last_is_normal_channel,
+            ) = _format_devlogic_packet(text)
             devlogic_packet_var.set(devlogic_last_packet)
-            if devlogic_last_is_new_channel and ui2_f4_automation_task.stop():
-                status_var.set("신규채널 감지: 자동화 모드를 중단하고 채널 감지를 대기합니다.")
-            run_on_ui("2", run_ui2_f5)
-            root.after(1000, lambda: run_on_ui("2", lambda: run_ui2_f6(force_start=True)))
+            if ui2_automation_var.get():
+                if devlogic_last_is_new_channel:
+                    ui2_waiting_for_normal_channel = True
+                    if ui2_f4_automation_task.stop():
+                        status_var.set("신규채널 감지: 자동화 모드를 중단하고 채널 감지를 대기합니다.")
+                elif ui2_waiting_for_normal_channel and devlogic_last_is_normal_channel:
+                    ui2_waiting_for_normal_channel = False
+                    run_on_ui("2", run_ui2_f5)
+                    root.after(
+                        1000, lambda: run_on_ui("2", lambda: run_ui2_f6(force_start=True))
+                    )
+            else:
+                ui2_waiting_for_normal_channel = False
         channel_segment_recorder.feed(text)
 
     def poll_devlogic_alert() -> None:
