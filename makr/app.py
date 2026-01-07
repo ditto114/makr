@@ -292,6 +292,13 @@ def build_gui() -> None:
     )
     channel_timeout_var = tk.StringVar(value=str(saved_state.get("channel_timeout_ms", "5000")))
     newline_var = tk.BooleanVar(value=bool(saved_state.get("newline_after_pos2", False)))
+    try:
+        pos3_mode_initial = int(saved_state.get("pos3_mode", 1))
+    except (TypeError, ValueError):
+        pos3_mode_initial = 1
+    if pos3_mode_initial not in range(1, 7):
+        pos3_mode_initial = 1
+    pos3_mode_var = tk.IntVar(value=pos3_mode_initial)
     ui2_automation_var = tk.BooleanVar(
         value=bool(saved_state.get("ui2_automation_enabled", False))
     )
@@ -337,7 +344,25 @@ def build_gui() -> None:
     def get_channel_timeout_ms() -> int:
         return _parse_delay_ms(channel_timeout_var, "채널 타임아웃", 5000)
 
-    def add_coordinate_row(parent: tk.Widget, label_text: str, key: str, target_entries: dict[str, tuple[tk.Entry, tk.Entry]]) -> None:
+    pos3_mode_coordinates: dict[int, dict[str, str]] = {}
+    saved_coordinates = saved_state.get("coordinates", {})
+    legacy_pos3_coords = saved_coordinates.get("pos3", {})
+    for mode in range(1, 7):
+        mode_key = f"pos3_{mode}"
+        coords = saved_coordinates.get(mode_key, {})
+        if not coords and mode == 1 and legacy_pos3_coords:
+            coords = legacy_pos3_coords
+        pos3_mode_coordinates[mode] = {
+            "x": str(coords.get("x", "0")),
+            "y": str(coords.get("y", "0")),
+        }
+
+    def add_coordinate_row(
+        parent: tk.Widget,
+        label_text: str,
+        key: str,
+        target_entries: dict[str, tuple[tk.Entry, tk.Entry]],
+    ) -> None:
         frame = tk.Frame(parent)
         frame.pack(fill="x", padx=10, pady=5)
 
@@ -384,6 +409,61 @@ def build_gui() -> None:
         register_button = tk.Button(frame, text="클릭으로 등록", command=start_capture)
         register_button.pack(side="left", padx=(6, 0))
 
+    def add_pos3_row(parent: tk.Widget, label_text: str) -> None:
+        frame = tk.Frame(parent)
+        frame.pack(fill="x", padx=10, pady=5)
+
+        tk.Label(frame, text=label_text, width=8, anchor="w").pack(side="left")
+        x_entry = tk.Entry(frame, width=6)
+        x_entry.pack(side="left", padx=(0, 4))
+        y_entry = tk.Entry(frame, width=6)
+        y_entry.pack(side="left")
+        entries_ui1["pos3"] = (x_entry, y_entry)
+
+        def load_pos3_mode_values() -> None:
+            mode = pos3_mode_var.get()
+            coords = pos3_mode_coordinates.get(mode, {"x": "0", "y": "0"})
+            x_entry.delete(0, tk.END)
+            x_entry.insert(0, coords["x"])
+            y_entry.delete(0, tk.END)
+            y_entry.insert(0, coords["y"])
+
+        load_pos3_mode_values()
+
+        def start_capture() -> None:
+            nonlocal capture_listener
+            if capture_listener is not None and capture_listener.running:
+                messagebox.showinfo("좌표 등록", "다른 좌표 등록이 진행 중입니다.")
+                return
+
+            mode = pos3_mode_var.get()
+            status_var.set(f"{label_text}-{mode} 등록: 원하는 위치를 클릭하세요.")
+            root.withdraw()
+
+            def on_click(x: float, y: float, button: mouse.Button, pressed: bool) -> bool:
+                if pressed and button == mouse.Button.left:
+                    root.after(0, finalize_capture, int(x), int(y))
+                    return False
+                return True
+
+            capture_listener = mouse.Listener(on_click=on_click)
+            capture_listener.start()
+
+        def finalize_capture(x_val: int, y_val: int) -> None:
+            nonlocal capture_listener
+            mode = pos3_mode_var.get()
+            pos3_mode_coordinates[mode] = {"x": str(x_val), "y": str(y_val)}
+            x_entry.delete(0, tk.END)
+            x_entry.insert(0, str(x_val))
+            y_entry.delete(0, tk.END)
+            y_entry.insert(0, str(y_val))
+            status_var.set(f"{label_text}-{mode} 좌표가 등록되었습니다: ({x_val}, {y_val})")
+            root.deiconify()
+            capture_listener = None
+
+        register_button = tk.Button(frame, text="클릭으로 등록", command=start_capture)
+        register_button.pack(side="left", padx=(6, 0))
+
     top_bar = tk.Frame(root)
     top_bar.pack(fill="x", pady=(6, 4))
     action_frame = tk.Frame(top_bar)
@@ -420,11 +500,17 @@ def build_gui() -> None:
     # UI 1
     ui1_top = tk.Frame(ui1_frame)
     ui1_top.pack(fill="x", pady=(0, 4))
-    tk.Checkbutton(ui1_top, text="줄바꿈", variable=newline_var).pack(side="right", padx=(0, 12))
+    pos3_mode_label_var = tk.StringVar()
+    pos3_mode_label = tk.Label(ui1_top, textvariable=pos3_mode_label_var)
+    pos3_mode_label.pack(side="left", padx=(12, 0))
+    pos3_mode_button = tk.Button(ui1_top, text="F7 모드 전환", width=12)
+    pos3_mode_button.pack(side="left", padx=(6, 0))
+    newline_checkbox = tk.Checkbutton(ui1_top, text="줄바꿈", variable=newline_var)
+    newline_checkbox.pack(side="right", padx=(0, 12))
 
     add_coordinate_row(ui1_frame, "pos1", "pos1", entries_ui1)
     add_coordinate_row(ui1_frame, "pos2", "pos2", entries_ui1)
-    add_coordinate_row(ui1_frame, "pos3", "pos3", entries_ui1)
+    add_pos3_row(ui1_frame, "pos3")
     add_coordinate_row(ui1_frame, "pos4", "pos4", entries_ui1)
 
     delay_frame_ui1 = tk.LabelFrame(ui1_frame, text="딜레이 설정")
@@ -506,6 +592,38 @@ def build_gui() -> None:
     )
 
     controller = MacroController(entries_ui1, status_var, delay_config)
+
+    def store_current_pos3_mode_values() -> None:
+        if "pos3" not in entries_ui1:
+            return
+        x_entry, y_entry = entries_ui1["pos3"]
+        pos3_mode_coordinates[pos3_mode_var.get()] = {
+            "x": x_entry.get(),
+            "y": y_entry.get(),
+        }
+
+    def update_pos3_mode_label() -> None:
+        pos3_mode_label_var.set(f"pos3 모드: 3-{pos3_mode_var.get()}")
+
+    def apply_newline_for_pos3_mode() -> None:
+        newline_var.set(pos3_mode_var.get() == 1)
+
+    def set_pos3_mode(new_mode: int) -> None:
+        store_current_pos3_mode_values()
+        normalized_mode = ((new_mode - 1) % 6) + 1
+        pos3_mode_var.set(normalized_mode)
+        coords = pos3_mode_coordinates.get(normalized_mode, {"x": "0", "y": "0"})
+        x_entry, y_entry = entries_ui1["pos3"]
+        x_entry.delete(0, tk.END)
+        x_entry.insert(0, coords["x"])
+        y_entry.delete(0, tk.END)
+        y_entry.insert(0, coords["y"])
+        update_pos3_mode_label()
+        apply_newline_for_pos3_mode()
+        status_var.set(f"pos3 모드가 3-{normalized_mode}로 변경되었습니다.")
+
+    def cycle_pos3_mode() -> None:
+        set_pos3_mode(pos3_mode_var.get() + 1)
 
     ui_toggle_button = tk.Button(top_bar, text="UI 전환", width=14)
     ui_toggle_button.pack(side="left", padx=(10, 4))
@@ -666,6 +784,17 @@ def build_gui() -> None:
 
     ui_toggle_button.configure(command=toggle_ui)
     switch_ui(ui_mode.get())
+    update_pos3_mode_label()
+    apply_newline_for_pos3_mode()
+    pos3_mode_button.configure(command=cycle_pos3_mode)
+
+    def enforce_newline_mode() -> None:
+        if pos3_mode_var.get() == 1 and not newline_var.get():
+            newline_var.set(True)
+        elif pos3_mode_var.get() != 1 and newline_var.get():
+            newline_var.set(False)
+
+    newline_checkbox.configure(command=enforce_newline_mode)
 
     ui2_repeater_f5 = RepeatingClickTask(set_status_async)
     ui2_repeater_f6 = RepeatingClickTask(set_status_async)
@@ -862,12 +991,19 @@ def build_gui() -> None:
 
     def collect_app_state() -> dict:
         update_overlay_position_from_window()
+        store_current_pos3_mode_values()
         coordinates: dict[str, dict[str, str]] = {}
         for key, (x_entry, y_entry) in {**entries_ui1, **entries_ui2}.items():
             coordinates[key] = {"x": x_entry.get(), "y": y_entry.get()}
+        for mode in range(1, 7):
+            coordinates[f"pos3_{mode}"] = pos3_mode_coordinates.get(
+                mode,
+                {"x": "0", "y": "0"},
+            )
         return {
             "coordinates": coordinates,
             "ui_mode": ui_mode.get(),
+            "pos3_mode": pos3_mode_var.get(),
             "delay_f2_before_esc_ms": f2_before_esc_var.get(),
             "delay_f2_before_pos1_ms": f2_before_pos1_var.get(),
             "delay_f2_before_pos2_ms": f2_before_pos2_var.get(),
@@ -1386,6 +1522,8 @@ def build_gui() -> None:
             run_on_ui("2", run_ui2_f5)
         elif key == keyboard.Key.f6:
             run_on_ui("2", run_ui2_f6)
+        elif key == keyboard.Key.f7:
+            run_on_ui("1", cycle_pos3_mode)
 
     def start_hotkey_listener() -> None:
         nonlocal hotkey_listener
