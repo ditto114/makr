@@ -631,6 +631,9 @@ def build_gui() -> None:
     test_button = tk.Button(action_frame, text="테스트", width=12)
     test_button.pack(side="right", padx=(0, 4))
 
+    new_channel_test_button = tk.Button(action_frame, text="신규채널테스트", width=12)
+    new_channel_test_button.pack(side="right", padx=(0, 4))
+
     packet_capture_button = tk.Button(action_frame, text="패킷캡쳐 시작", width=12)
     packet_capture_button.pack(side="right", padx=(0, 4))
 
@@ -809,16 +812,16 @@ def build_gui() -> None:
         if start == -1:
             return "", False, False
         segment_start = start + len("DevLogic")
-        end = packet_text.find("ExpDrop", segment_start)
-        if end == -1:
-            return "", False, False
-        segment = packet_text[segment_start:end]
+        segment = packet_text[segment_start : segment_start + 25]
         sanitized = re.sub(r"[^0-9A-Za-z가-힣]", "-", segment)
-        display = sanitized[:20]
-        has_segment = bool(sanitized)
-        has_non_hyphen = bool(sanitized.strip("-"))
-        is_new_channel = has_segment and not has_non_hyphen
-        is_normal_channel = has_segment and has_non_hyphen
+        display = sanitized[:25]
+        if not display:
+            return "", False, False
+        has_alpha = bool(re.search(r"[A-Za-z]", display))
+        has_digit = bool(re.search(r"[0-9]", display))
+        has_korean = bool(re.search(r"[가-힣]", display))
+        is_normal_channel = has_alpha and has_digit and has_korean
+        is_new_channel = not is_normal_channel
         return display, is_new_channel, is_normal_channel
 
     def _get_ui2_point(key: str, label: str) -> tuple[int, int] | None:
@@ -1427,6 +1430,10 @@ def build_gui() -> None:
                 ui2_waiting_for_normal_channel = False
         channel_segment_recorder.feed(text)
 
+    def trigger_new_channel_test() -> None:
+        test_payload = "DevLogic" + ("A" * 25)
+        process_packet_detection(test_payload)
+
     def poll_devlogic_alert() -> None:
         interval_ms = get_channel_watch_interval_ms()
         now = time.time()
@@ -1437,7 +1444,11 @@ def build_gui() -> None:
             and now - devlogic_last_detected_at <= alert_duration_sec
         )
         if visible:
-            devlogic_alert_var.set("신규채널!!" if devlogic_last_is_new_channel else "채널 감지")
+            alert_prefix = "신규채널!!" if devlogic_last_is_new_channel else "채널 감지"
+            if devlogic_last_packet:
+                devlogic_alert_var.set(f"{alert_prefix} {devlogic_last_packet}")
+            else:
+                devlogic_alert_var.set(alert_prefix)
         else:
             devlogic_alert_var.set("")
         devlogic_packet_var.set(devlogic_last_packet if visible else "")
@@ -1490,6 +1501,7 @@ def build_gui() -> None:
 
     update_packet_capture_button()
     packet_capture_button.configure(command=toggle_packet_capture)
+    new_channel_test_button.configure(command=trigger_new_channel_test)
 
     overlay_toggle_button.configure(command=show_overlay)
     test_button.configure(command=show_test_window)
