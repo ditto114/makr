@@ -1527,12 +1527,14 @@ def build_gui() -> None:
         interval_ms = get_channel_watch_interval_ms()
         visible = ui_mode.get() == "2" and devlogic_last_detected_at is not None
         if visible:
+            elapsed_sec = max(0, int(time.time() - devlogic_last_detected_at))
+            elapsed_suffix = f"({elapsed_sec}초 전)"
             if devlogic_last_alert_message and devlogic_last_alert_packet:
                 devlogic_alert_var.set(
-                    f"{devlogic_last_alert_message} {devlogic_last_alert_packet}"
+                    f"{devlogic_last_alert_message} {devlogic_last_alert_packet} {elapsed_suffix}"
                 )
             elif devlogic_last_alert_message:
-                devlogic_alert_var.set(devlogic_last_alert_message)
+                devlogic_alert_var.set(f"{devlogic_last_alert_message} {elapsed_suffix}")
             else:
                 devlogic_alert_var.set("")
         else:
