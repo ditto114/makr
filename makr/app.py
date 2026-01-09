@@ -103,49 +103,6 @@ class RepeatingClickTask:
         return self._thread is not None and self._thread.is_alive()
 
 
-class RepeatingActionTask:
-    def __init__(self, status_fn: Callable[[str], None]) -> None:
-        self._thread: threading.Thread | None = None
-        self._stop_event = threading.Event()
-        self._status_fn = status_fn
-
-    def start(
-        self,
-        action: Callable[[], None],
-        interval_sec: float,
-        *,
-        start_message: str,
-        stop_message: str,
-    ) -> None:
-        self.stop()
-        self._stop_event.clear()
-
-        def _run() -> None:
-            self._status_fn(start_message)
-            try:
-                while not self._stop_event.is_set():
-                    action()
-                    if self._stop_event.wait(max(interval_sec, 0)):
-                        break
-            finally:
-                self._status_fn(stop_message)
-
-        self._thread = threading.Thread(target=_run, daemon=True)
-        self._thread.start()
-
-    def stop(self, *, stop_message: str | None = None) -> bool:
-        if not self.is_running:
-            return False
-        self._stop_event.set()
-        if stop_message:
-            self._status_fn(stop_message)
-        return True
-
-    @property
-    def is_running(self) -> bool:
-        return self._thread is not None and self._thread.is_alive()
-
-
 class MacroController:
     """실행 순서를 관리하고 GUI 콜백을 제공합니다."""
 
@@ -802,13 +759,13 @@ def build_gui() -> None:
 
     ui2_repeater_f5 = RepeatingClickTask(set_status_async)
     ui2_repeater_f6 = RepeatingClickTask(set_status_async)
-    ui2_f4_automation_task = RepeatingActionTask(set_status_async)
     devlogic_last_detected_at: float | None = None
     devlogic_last_packet = ""
     devlogic_last_is_new_channel = False
     ui2_waiting_for_normal_channel = False
-    ui2_normal_channel_sequence_active = False
-    ui2_normal_channel_after_id: str | None = None
+    ui2_waiting_for_new_channel = False
+    ui2_waiting_for_selection = False
+    ui2_automation_active = False
 
     class BeepNotifier:
         def __init__(self, root_widget: tk.Tk) -> None:
@@ -897,28 +854,10 @@ def build_gui() -> None:
         return _run
 
     def run_ui2_f4() -> None:
-        nonlocal ui2_waiting_for_normal_channel
         if ui2_automation_var.get():
-            if ui2_f4_automation_task.is_running:
-                ui2_f4_automation_task.stop(stop_message="자동화 모드: 중지되었습니다.")
-                ui2_waiting_for_normal_channel = False
-                return
-            action = _build_ui2_f4_action()
-            if action is None:
-                return
-            if ui2_repeater_f6.stop():
-                set_status_async("F6 반복 클릭을 중지했습니다.")
-            ui2_waiting_for_normal_channel = False
-            ui2_f4_automation_task.start(
-                action,
-                0.5,
-                start_message="자동화 모드: F4 반복 시작",
-                stop_message="자동화 모드: 중지되었습니다.",
-            )
+            start_ui2_automation_sequence()
             return
 
-        if ui2_f4_automation_task.stop():
-            set_status_async("자동화 모드: 중지되었습니다.")
         action = _build_ui2_f4_action()
         if action is None:
             return
@@ -958,32 +897,42 @@ def build_gui() -> None:
             stop_message="F6: 중지되었습니다.",
         )
 
-    def cancel_ui2_normal_channel_sequence() -> None:
-        nonlocal ui2_normal_channel_after_id
-        if ui2_normal_channel_after_id is None:
-            return
-        root.after_cancel(ui2_normal_channel_after_id)
-        ui2_normal_channel_after_id = None
+    def stop_ui2_automation_sequence(message: str = "자동화 모드: 중지되었습니다.") -> None:
+        nonlocal ui2_waiting_for_normal_channel
+        nonlocal ui2_waiting_for_new_channel
+        nonlocal ui2_waiting_for_selection
+        nonlocal ui2_automation_active
+        ui2_automation_active = False
+        ui2_waiting_for_new_channel = False
+        ui2_waiting_for_normal_channel = False
+        ui2_waiting_for_selection = False
+        if ui2_repeater_f5.stop():
+            set_status_async("F5: 중지되었습니다.")
+        if ui2_repeater_f6.stop():
+            set_status_async("F6: 중지되었습니다.")
+        set_status_async(message)
 
-    def start_ui2_normal_channel_sequence() -> None:
-        nonlocal ui2_normal_channel_sequence_active
-        nonlocal ui2_normal_channel_after_id
-        cancel_ui2_normal_channel_sequence()
-        ui2_normal_channel_sequence_active = True
-        run_on_ui("2", run_ui2_f5)
-        ui2_normal_channel_after_id = root.after(
-            1000, lambda: run_on_ui("2", lambda: run_ui2_f6(force_start=True))
-        )
+    def start_ui2_automation_sequence() -> None:
+        nonlocal ui2_waiting_for_normal_channel
+        nonlocal ui2_waiting_for_new_channel
+        nonlocal ui2_waiting_for_selection
+        nonlocal ui2_automation_active
+        if ui2_automation_active:
+            set_status_async("자동화 모드: 이미 실행 중입니다.")
+            return
+        ui2_automation_active = True
+        ui2_waiting_for_new_channel = True
+        ui2_waiting_for_normal_channel = False
+        ui2_waiting_for_selection = False
+        if ui2_repeater_f5.stop():
+            set_status_async("F5: 중지되었습니다.")
+        if ui2_repeater_f6.stop():
+            set_status_async("F6: 중지되었습니다.")
+        set_status_async("자동화 모드: 신규 채널 감지 대기 중…")
 
     def on_ui2_automation_toggle() -> None:
-        nonlocal ui2_waiting_for_normal_channel
-        nonlocal ui2_normal_channel_sequence_active
         if not ui2_automation_var.get():
-            if ui2_f4_automation_task.stop():
-                set_status_async("자동화 모드: 중지되었습니다.")
-            ui2_waiting_for_normal_channel = False
-            ui2_normal_channel_sequence_active = False
-            cancel_ui2_normal_channel_sequence()
+            stop_ui2_automation_sequence()
 
     ui2_automation_checkbox.configure(command=on_ui2_automation_toggle)
 
@@ -1464,8 +1413,10 @@ def build_gui() -> None:
         nonlocal devlogic_last_detected_at
         nonlocal devlogic_last_packet
         nonlocal devlogic_last_is_new_channel
+        nonlocal ui2_automation_active
         nonlocal ui2_waiting_for_normal_channel
-        nonlocal ui2_normal_channel_sequence_active
+        nonlocal ui2_waiting_for_new_channel
+        nonlocal ui2_waiting_for_selection
         if "DevLogic" in text:
             devlogic_last_detected_at = time.time()
             (
@@ -1474,23 +1425,34 @@ def build_gui() -> None:
                 devlogic_last_is_normal_channel,
             ) = _format_devlogic_packet(text)
             devlogic_packet_var.set(devlogic_last_packet)
-            if ui2_automation_var.get():
-                if devlogic_last_is_new_channel:
+            if ui2_automation_var.get() and ui2_automation_active:
+                if ui2_waiting_for_new_channel and devlogic_last_is_new_channel:
+                    ui2_waiting_for_new_channel = False
                     ui2_waiting_for_normal_channel = True
-                    ui2_normal_channel_sequence_active = False
-                    cancel_ui2_normal_channel_sequence()
-                    if ui2_repeater_f5.stop():
-                        set_status_async("F5: 중지되었습니다.")
-                    if ui2_repeater_f6.stop():
-                        set_status_async("F6: 중지되었습니다.")
-                    if ui2_f4_automation_task.stop():
-                        status_var.set("신규채널 감지: 자동화 모드를 중단하고 채널 감지를 대기합니다.")
+                    ui2_waiting_for_selection = False
+                    set_status_async("신규 채널 감지: 일반 채널 감지 대기 중…")
                     beep_notifier.start(3)
                 elif ui2_waiting_for_normal_channel and devlogic_last_is_normal_channel:
                     ui2_waiting_for_normal_channel = False
-                    start_ui2_normal_channel_sequence()
+                    ui2_waiting_for_selection = True
+                    run_on_ui("2", run_ui2_f5)
+                    set_status_async("일반 채널 감지: F5 실행 및 선택창 감지 대기 중…")
             else:
+                ui2_waiting_for_new_channel = False
                 ui2_waiting_for_normal_channel = False
+                ui2_waiting_for_selection = False
+                ui2_automation_active = False
+        if (
+            "AdminLevel" in text
+            and ui2_automation_var.get()
+            and ui2_automation_active
+            and ui2_waiting_for_selection
+        ):
+            ui2_waiting_for_selection = False
+            if ui2_repeater_f5.stop():
+                set_status_async("F5: 중지되었습니다.")
+            run_on_ui("2", lambda: run_ui2_f6(force_start=True))
+            set_status_async("선택창 감지: F6 실행 중… F6 재입력 시 중단됩니다.")
         channel_segment_recorder.feed(text)
 
     def trigger_new_channel_test() -> None:
@@ -1499,13 +1461,7 @@ def build_gui() -> None:
 
     def poll_devlogic_alert() -> None:
         interval_ms = get_channel_watch_interval_ms()
-        now = time.time()
-        alert_duration_sec = 3
-        visible = (
-            ui_mode.get() == "2"
-            and devlogic_last_detected_at is not None
-            and now - devlogic_last_detected_at <= alert_duration_sec
-        )
+        visible = ui_mode.get() == "2" and devlogic_last_detected_at is not None
         if visible:
             alert_prefix = "신규채널!!" if devlogic_last_is_new_channel else "채널 감지"
             if devlogic_last_packet:
@@ -1596,17 +1552,12 @@ def build_gui() -> None:
         elif key == keyboard.Key.f5:
             run_on_ui("2", run_ui2_f5)
         elif key == keyboard.Key.f6:
-            run_on_ui("2", run_ui2_f6)
+            if ui2_automation_active:
+                stop_ui2_automation_sequence("자동화 모드: F6 입력으로 중단되었습니다.")
+            else:
+                run_on_ui("2", run_ui2_f6)
         elif key == keyboard.Key.f7:
             run_on_ui("1", cycle_pos3_mode)
-        elif key == keyboard.Key.space:
-            if ui2_normal_channel_sequence_active:
-                cancel_ui2_normal_channel_sequence()
-                if ui2_repeater_f5.stop():
-                    set_status_async("F5: 중지되었습니다.")
-                if ui2_repeater_f6.stop():
-                    set_status_async("F6: 중지되었습니다.")
-                start_ui2_normal_channel_sequence()
 
     def start_hotkey_listener() -> None:
         nonlocal hotkey_listener
@@ -1621,7 +1572,7 @@ def build_gui() -> None:
         if hotkey_listener is not None:
             hotkey_listener.stop()
         channel_detection_sequence.stop()
-        ui2_f4_automation_task.stop()
+        stop_ui2_automation_sequence()
         ui2_repeater_f5.stop()
         ui2_repeater_f6.stop()
         beep_notifier.stop()
