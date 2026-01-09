@@ -103,49 +103,6 @@ class RepeatingClickTask:
         return self._thread is not None and self._thread.is_alive()
 
 
-class RepeatingActionTask:
-    def __init__(self, status_fn: Callable[[str], None]) -> None:
-        self._thread: threading.Thread | None = None
-        self._stop_event = threading.Event()
-        self._status_fn = status_fn
-
-    def start(
-        self,
-        action: Callable[[], None],
-        interval_sec: float,
-        *,
-        start_message: str,
-        stop_message: str,
-    ) -> None:
-        self.stop()
-        self._stop_event.clear()
-
-        def _run() -> None:
-            self._status_fn(start_message)
-            try:
-                while not self._stop_event.is_set():
-                    action()
-                    if self._stop_event.wait(max(interval_sec, 0)):
-                        break
-            finally:
-                self._status_fn(stop_message)
-
-        self._thread = threading.Thread(target=_run, daemon=True)
-        self._thread.start()
-
-    def stop(self, *, stop_message: str | None = None) -> bool:
-        if not self.is_running:
-            return False
-        self._stop_event.set()
-        if stop_message:
-            self._status_fn(stop_message)
-        return True
-
-    @property
-    def is_running(self) -> bool:
-        return self._thread is not None and self._thread.is_alive()
-
-
 class MacroController:
     """실행 순서를 관리하고 GUI 콜백을 제공합니다."""
 
@@ -802,7 +759,6 @@ def build_gui() -> None:
 
     ui2_repeater_f5 = RepeatingClickTask(set_status_async)
     ui2_repeater_f6 = RepeatingClickTask(set_status_async)
-    ui2_f4_automation_task = RepeatingActionTask(set_status_async)
     devlogic_last_detected_at: float | None = None
     devlogic_last_packet = ""
     devlogic_last_is_new_channel = False
