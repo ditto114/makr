@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -25,8 +26,30 @@ from makr.packet import PacketCaptureManager
 import pyautogui
 from pynput import keyboard, mouse
 
-APP_STATE_PATH = Path(__file__).with_name("app_state.json")
-NEW_CHANNEL_SOUND_PATH = Path(__file__).with_name("new.wav")
+def _get_user_state_path() -> Path:
+    if sys.platform.startswith("win"):
+        base_dir = Path(
+            os.environ.get("LOCALAPPDATA")
+            or os.environ.get("APPDATA")
+            or Path.home() / "AppData" / "Local"
+        )
+    elif sys.platform == "darwin":
+        base_dir = Path.home() / "Library" / "Application Support"
+    else:
+        base_dir = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+    return base_dir / "makr" / "app_state.json"
+
+
+def _get_package_resource_path(relative_path: str) -> Path:
+    if hasattr(sys, "_MEIPASS"):
+        base_dir = Path(getattr(sys, "_MEIPASS")) / "makr"
+    else:
+        base_dir = Path(__file__).resolve().parent
+    return base_dir / relative_path
+
+
+APP_STATE_PATH = _get_user_state_path()
+NEW_CHANNEL_SOUND_PATH = _get_package_resource_path("new.wav")
 
 # pyautogui의 기본 지연(0.1초)을 제거해 클릭 간 딜레이를 사용자 설정값에만 의존하도록 합니다.
 pyautogui.PAUSE = 0
@@ -43,6 +66,7 @@ def load_app_state() -> dict:
 
 def save_app_state(state: dict) -> None:
     try:
+        APP_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
         APP_STATE_PATH.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
     except OSError:
         messagebox.showwarning("설정 저장", "입력값을 저장하는 중 오류가 발생했습니다.")
