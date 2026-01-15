@@ -9,6 +9,9 @@ from __future__ import annotations
 import importlib
 import json
 import re
+import shutil
+import subprocess
+import sys
 import threading
 import time
 import tkinter as tk
@@ -24,6 +27,7 @@ import pyautogui
 from pynput import keyboard, mouse
 
 APP_STATE_PATH = Path(__file__).with_name("app_state.json")
+NEW_CHANNEL_SOUND_PATH = Path(__file__).with_name("new.mp3")
 
 # pyautogui의 기본 지연(0.1초)을 제거해 클릭 간 딜레이를 사용자 설정값에만 의존하도록 합니다.
 pyautogui.PAUSE = 0
@@ -144,6 +148,65 @@ class RepeatingActionTask:
     @property
     def is_running(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
+
+
+class SoundPlayer:
+    def __init__(self, sound_path: Path) -> None:
+        self._sound_path = sound_path
+        self._winsound = (
+            importlib.import_module("winsound")
+            if importlib.util.find_spec("winsound")
+            else None
+        )
+
+    def play_once(self) -> None:
+        if not self._sound_path.exists():
+            return
+        suffix = self._sound_path.suffix.lower()
+
+        def _run() -> None:
+            if self._winsound is not None and suffix == ".wav":
+                self._winsound.PlaySound(
+                    str(self._sound_path),
+                    self._winsound.SND_FILENAME,
+                )
+                return
+            if sys.platform.startswith("win"):
+                subprocess.run(
+                    [
+                        "powershell",
+                        "-NoProfile",
+                        "-Command",
+                        (
+                            "$player = New-Object -ComObject WMPlayer.OCX.7;"
+                            f"$player.URL = '{self._sound_path}';"
+                            "$player.controls.play();"
+                            "Start-Sleep -Milliseconds 500;"
+                        ),
+                    ],
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                return
+            player = None
+            for cmd in ("afplay", "ffplay", "mpg123", "play", "aplay"):
+                if shutil.which(cmd):
+                    player = cmd
+                    break
+            if player is None:
+                return
+            command = [player, str(self._sound_path)]
+            if player == "ffplay":
+                command = [player, "-nodisp", "-autoexit", str(self._sound_path)]
+            subprocess.run(
+                command,
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+
+        threading.Thread(target=_run, daemon=True).start()
 
 
 class MacroController:
@@ -297,6 +360,9 @@ def build_gui() -> None:
     pos3_mode_var = tk.IntVar(value=pos3_mode_initial)
     ui2_automation_var = tk.BooleanVar(
         value=bool(saved_state.get("ui2_automation_enabled", False))
+    )
+    ui2_test_new_channel_var = tk.BooleanVar(
+        value=bool(saved_state.get("ui2_test_new_channel", False))
     )
 
     entries_ui1: dict[str, tuple[tk.Entry, tk.Entry]] = {}
@@ -578,6 +644,10 @@ def build_gui() -> None:
         ui2_top, text="자동화", variable=ui2_automation_var
     )
     ui2_automation_checkbox.pack(side="right", padx=(0, 12))
+    ui2_test_checkbox = tk.Checkbutton(
+        ui2_top, text="테스트", variable=ui2_test_new_channel_var
+    )
+    ui2_test_checkbox.pack(side="right", padx=(0, 6))
 
     add_coordinate_row(ui2_frame, "···", "pos11", entries_ui2)
     add_coordinate_row(ui2_frame, "🔃", "pos12", entries_ui2)
@@ -757,6 +827,7 @@ def build_gui() -> None:
     ui2_repeater_f5 = RepeatingClickTask(set_status_async)
     ui2_repeater_f6 = RepeatingClickTask(set_status_async)
     ui2_f4_automation_task = RepeatingActionTask(set_status_async)
+    new_channel_sound_player = SoundPlayer(NEW_CHANNEL_SOUND_PATH)
     devlogic_last_detected_at: float | None = None
     devlogic_last_packet = ""
     devlogic_last_is_new_channel = False
@@ -1136,6 +1207,7 @@ def build_gui() -> None:
             "channel_timeout_ms": channel_timeout_var.get(),
             "newline_after_pos2": newline_var.get(),
             "ui2_automation_enabled": ui2_automation_var.get(),
+            "ui2_test_new_channel": ui2_test_new_channel_var.get(),
         }
 
     def build_pattern_table(names: list[str]) -> tuple[str | None, list[list[str]]]:
@@ -1564,6 +1636,8 @@ def build_gui() -> None:
                 detected_at=detected_at,
                 is_new=bool(new_names),
             )
+            if new_names:
+                new_channel_sound_player.play_once()
 
     channel_segment_recorder = ChannelSegmentRecorder(handle_captured_pattern)
 
@@ -1660,12 +1734,21 @@ def build_gui() -> None:
                 devlogic_last_is_new_channel,
                 devlogic_last_is_normal_channel,
             ) = _format_devlogic_packet(text)
+            forced_new_channel = (
+                ui2_automation_active
+                and ui2_automation_var.get()
+                and ui2_test_new_channel_var.get()
+                and devlogic_last_is_normal_channel
+            )
+            effective_new_channel = devlogic_last_is_new_channel or forced_new_channel
             alert_prefix = "신규채널!!" if devlogic_last_is_new_channel else "채널 감지"
             devlogic_last_alert_message = alert_prefix
             devlogic_last_alert_packet = devlogic_last_packet
             devlogic_packet_var.set(devlogic_last_packet)
+            if effective_new_channel:
+                new_channel_sound_player.play_once()
             if ui2_automation_active and ui2_automation_var.get():
-                if ui2_waiting_for_new_channel and devlogic_last_is_new_channel:
+                if ui2_waiting_for_new_channel and effective_new_channel:
                     ui2_waiting_for_new_channel = False
                     ui2_waiting_for_normal_channel = True
                     ui2_waiting_for_selection = False
