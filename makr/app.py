@@ -150,13 +150,41 @@ class RepeatingActionTask:
 
 
 class SoundPlayer:
-    def __init__(self, sound_path: Path) -> None:
+    def __init__(self, sound_path: Path, *, volume: float = 1.0) -> None:
         self._sound_path = sound_path
+        self._volume = max(0.0, min(volume, 1.0))
         self._winsound = (
             importlib.import_module("winsound")
             if importlib.util.find_spec("winsound")
             else None
         )
+        self._cached_wav_bytes: bytes | None = None
+
+    def _load_scaled_wav(self) -> bytes | None:
+        if self._cached_wav_bytes is not None:
+            return self._cached_wav_bytes
+        if not self._sound_path.exists():
+            return None
+        try:
+            import audioop
+            import io
+            import wave
+        except ImportError:
+            return None
+        try:
+            with wave.open(str(self._sound_path), "rb") as wav_file:
+                params = wav_file.getparams()
+                frames = wav_file.readframes(params.nframes)
+            if self._volume != 1.0:
+                frames = audioop.mul(frames, params.sampwidth, self._volume)
+            buffer = io.BytesIO()
+            with wave.open(buffer, "wb") as output_wav:
+                output_wav.setparams(params)
+                output_wav.writeframes(frames)
+            self._cached_wav_bytes = buffer.getvalue()
+        except (OSError, wave.Error):
+            return None
+        return self._cached_wav_bytes
 
     def play_once(self) -> None:
         if not self._sound_path.exists():
@@ -167,6 +195,13 @@ class SoundPlayer:
 
         def _run() -> None:
             if self._winsound is not None:
+                wav_bytes = self._load_scaled_wav()
+                if wav_bytes is not None:
+                    self._winsound.PlaySound(
+                        wav_bytes,
+                        self._winsound.SND_MEMORY | self._winsound.SND_ASYNC,
+                    )
+                    return
                 self._winsound.PlaySound(
                     str(self._sound_path),
                     self._winsound.SND_FILENAME | self._winsound.SND_ASYNC,
@@ -174,7 +209,7 @@ class SoundPlayer:
                 return
             if sys.platform == "darwin":
                 subprocess.run(
-                    ["afplay", str(self._sound_path)],
+                    ["afplay", "-v", f"{self._volume:.2f}", str(self._sound_path)],
                     check=False,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
@@ -801,7 +836,7 @@ def build_gui() -> None:
     ui2_repeater_f5 = RepeatingClickTask(set_status_async)
     ui2_repeater_f6 = RepeatingClickTask(set_status_async)
     ui2_f4_automation_task = RepeatingActionTask(set_status_async)
-    new_channel_sound_player = SoundPlayer(NEW_CHANNEL_SOUND_PATH)
+    new_channel_sound_player = SoundPlayer(NEW_CHANNEL_SOUND_PATH, volume=0.5)
     devlogic_last_detected_at: float | None = None
     devlogic_last_packet = ""
     devlogic_last_is_new_channel = False
@@ -1610,8 +1645,6 @@ def build_gui() -> None:
                 detected_at=detected_at,
                 is_new=bool(new_names),
             )
-            if new_names:
-                new_channel_sound_player.play_once()
 
     channel_segment_recorder = ChannelSegmentRecorder(handle_captured_pattern)
 
@@ -1719,10 +1752,9 @@ def build_gui() -> None:
             devlogic_last_alert_message = alert_prefix
             devlogic_last_alert_packet = devlogic_last_packet
             devlogic_packet_var.set(devlogic_last_packet)
-            if effective_new_channel:
-                new_channel_sound_player.play_once()
             if ui2_automation_active and ui2_automation_var.get():
                 if ui2_waiting_for_new_channel and effective_new_channel:
+                    new_channel_sound_player.play_once()
                     ui2_waiting_for_new_channel = False
                     ui2_waiting_for_normal_channel = True
                     ui2_waiting_for_selection = False
