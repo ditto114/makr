@@ -904,6 +904,13 @@ def build_gui() -> None:
         set_status_async(message)
         threading.Thread(target=action, daemon=True).start()
 
+    def restart_ui2_f4_logic(message: str) -> None:
+        action = _build_ui2_f4_action()
+        if action is None:
+            return
+        set_status_async(message)
+        threading.Thread(target=action, daemon=True).start()
+
     def run_ui2_f4() -> None:
         if ui2_automation_var.get():
             start_ui2_automation()
@@ -1535,7 +1542,7 @@ def build_gui() -> None:
                     status_var.set("신규채널 감지: 일반 채널을 대기합니다.")
                     beep_notifier.start(3)
                 elif ui2_waiting_for_new_channel and devlogic_last_is_normal_channel:
-                    restart_ui2_f4_cycle("일반채널 감지: F4 1회 재실행")
+                    restart_ui2_f4_logic("일반채널 감지: F4 로직 재실행")
                 elif ui2_waiting_for_normal_channel and devlogic_last_is_normal_channel:
                     ui2_waiting_for_normal_channel = False
                     ui2_waiting_for_selection = True
