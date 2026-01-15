@@ -1,4 +1,4 @@
-"""단계별 마우스/키보드 자동화를 위한 간단한 GUI.
+"""대칭 전력 마우스/키보드 자동화를 위한 간단한 GUI.
 
 macOS에서 최상단에 고정된 창을 제공하며, F1/F2 단축키로
 순차 동작을 제어합니다.
@@ -249,7 +249,7 @@ class MacroController:
 
 def build_gui() -> None:
     root = tk.Tk()
-    root.title("단계별 자동화")
+    root.title("대칭 전력")
     root.attributes("-topmost", True)
 
     saved_state = load_app_state()
@@ -647,6 +647,9 @@ def build_gui() -> None:
 
     def cycle_pos3_mode() -> None:
         set_pos3_mode(pos3_mode_var.get() + 1)
+
+    packet_read_button = tk.Button(action_frame, text="패킷읽기", width=12)
+    packet_read_button.pack(side="left", padx=(0, 6))
 
     packet_capture_button = tk.Button(action_frame, text="패킷캡쳐 시작", width=12)
     packet_capture_button.pack(side="left", padx=(0, 6))
@@ -1415,6 +1418,81 @@ def build_gui() -> None:
 
     channel_segment_recorder = ChannelSegmentRecorder(handle_captured_pattern)
 
+    packet_read_window: tk.Toplevel | None = None
+    packet_read_text: tk.Text | None = None
+    packet_read_records: list[str] = []
+
+    def sanitize_packet_text(text: str) -> str:
+        return re.sub(r"[^0-9A-Za-z가-힣]", "-", text)
+
+    def clear_packet_reads() -> None:
+        packet_read_records.clear()
+        if packet_read_text is None:
+            return
+        packet_read_text.configure(state="normal")
+        packet_read_text.delete("1.0", tk.END)
+        packet_read_text.configure(state="disabled")
+
+    def append_packet_read(text: str) -> None:
+        nonlocal packet_read_text
+        sanitized = sanitize_packet_text(text)
+        packet_read_records.append(sanitized)
+        if packet_read_text is None:
+            return
+        if packet_read_window is None or not tk.Toplevel.winfo_exists(packet_read_window):
+            return
+        packet_read_text.configure(state="normal")
+        packet_read_text.insert(tk.END, sanitized + "\n")
+        packet_read_text.see(tk.END)
+        packet_read_text.configure(state="disabled")
+
+    def show_packet_read_window() -> None:
+        nonlocal packet_read_window, packet_read_text
+        if packet_read_window is not None and tk.Toplevel.winfo_exists(packet_read_window):
+            packet_read_window.lift()
+            packet_read_window.focus_force()
+            return
+
+        packet_read_window = tk.Toplevel(root)
+        packet_read_window.title("패킷읽기")
+        packet_read_window.geometry("640x480")
+        packet_read_window.resizable(True, True)
+
+        packet_frame = ttk.Frame(packet_read_window)
+        packet_frame.pack(fill="both", expand=True, padx=8, pady=(8, 4))
+
+        scrollbar = ttk.Scrollbar(packet_frame, orient="vertical")
+        scrollbar.pack(side="right", fill="y")
+
+        packet_read_text = tk.Text(packet_frame, wrap="none", state="disabled")
+        packet_read_text.pack(side="left", fill="both", expand=True)
+        packet_read_text.configure(yscrollcommand=scrollbar.set)
+        scrollbar.configure(command=packet_read_text.yview)
+
+        control_frame = ttk.Frame(packet_read_window)
+        control_frame.pack(fill="x", padx=8, pady=(0, 8))
+        ttk.Button(control_frame, text="기록 초기화", command=clear_packet_reads).pack(
+            side="right"
+        )
+
+        if packet_read_records:
+            packet_read_text.configure(state="normal")
+            packet_read_text.insert(tk.END, "\n".join(packet_read_records) + "\n")
+            packet_read_text.see(tk.END)
+            packet_read_text.configure(state="disabled")
+
+        def on_close_packet_read_window() -> None:
+            nonlocal packet_read_window, packet_read_text
+            if packet_read_text is not None:
+                packet_read_text.destroy()
+            packet_read_text = None
+            window = packet_read_window
+            packet_read_window = None
+            if window is not None:
+                window.destroy()
+
+        packet_read_window.protocol("WM_DELETE_WINDOW", on_close_packet_read_window)
+
     def process_packet_detection(text: str) -> None:
         nonlocal devlogic_last_detected_at
         nonlocal devlogic_last_packet
@@ -1425,6 +1503,7 @@ def build_gui() -> None:
         nonlocal ui2_waiting_for_new_channel
         nonlocal ui2_waiting_for_normal_channel
         nonlocal ui2_waiting_for_selection
+        append_packet_read(text)
         if "DevLogic" in text:
             devlogic_last_detected_at = time.time()
             (
@@ -1530,6 +1609,7 @@ def build_gui() -> None:
 
     update_packet_capture_button()
     packet_capture_button.configure(command=toggle_packet_capture)
+    packet_read_button.configure(command=show_packet_read_window)
     test_button.configure(command=show_test_window)
     poll_devlogic_alert()
 
