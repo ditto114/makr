@@ -48,8 +48,14 @@ def _get_package_resource_path(relative_path: str) -> Path:
     return base_dir / relative_path
 
 
+def _get_new_channel_sound_path() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent / "new.wav"
+    return _get_package_resource_path("new.wav")
+
+
 APP_STATE_PATH = _get_user_state_path()
-NEW_CHANNEL_SOUND_PATH = _get_package_resource_path("new.wav")
+NEW_CHANNEL_SOUND_PATH = _get_new_channel_sound_path()
 
 # pyautogui의 기본 지연(0.1초)을 제거해 클릭 간 딜레이를 사용자 설정값에만 의존하도록 합니다.
 pyautogui.PAUSE = 0
@@ -752,9 +758,6 @@ def build_gui() -> None:
 
     def cycle_pos3_mode() -> None:
         set_pos3_mode(pos3_mode_var.get() + 1)
-
-    packet_read_button = tk.Button(action_frame, text="패킷읽기", width=12)
-    packet_read_button.pack(side="left", padx=(0, 6))
 
     packet_capture_button = tk.Button(action_frame, text="패킷캡쳐 시작", width=12)
     packet_capture_button.pack(side="left", padx=(0, 6))
@@ -1672,81 +1675,6 @@ def build_gui() -> None:
 
     channel_segment_recorder = ChannelSegmentRecorder(handle_captured_pattern)
 
-    packet_read_window: tk.Toplevel | None = None
-    packet_read_text: tk.Text | None = None
-    packet_read_records: list[str] = []
-
-    def sanitize_packet_text(text: str) -> str:
-        return re.sub(r"[^0-9A-Za-z가-힣]", "-", text)
-
-    def clear_packet_reads() -> None:
-        packet_read_records.clear()
-        if packet_read_text is None:
-            return
-        packet_read_text.configure(state="normal")
-        packet_read_text.delete("1.0", tk.END)
-        packet_read_text.configure(state="disabled")
-
-    def append_packet_read(text: str) -> None:
-        nonlocal packet_read_text
-        if packet_read_window is None or not tk.Toplevel.winfo_exists(packet_read_window):
-            return
-        sanitized = sanitize_packet_text(text)
-        packet_read_records.append(sanitized)
-        if packet_read_text is None:
-            return
-        packet_read_text.configure(state="normal")
-        packet_read_text.insert(tk.END, sanitized + "\n")
-        packet_read_text.see(tk.END)
-        packet_read_text.configure(state="disabled")
-
-    def show_packet_read_window() -> None:
-        nonlocal packet_read_window, packet_read_text
-        if packet_read_window is not None and tk.Toplevel.winfo_exists(packet_read_window):
-            packet_read_window.lift()
-            packet_read_window.focus_force()
-            return
-
-        packet_read_window = tk.Toplevel(root)
-        packet_read_window.title("패킷읽기")
-        packet_read_window.geometry("640x480")
-        packet_read_window.resizable(True, True)
-
-        packet_frame = ttk.Frame(packet_read_window)
-        packet_frame.pack(fill="both", expand=True, padx=8, pady=(8, 4))
-
-        scrollbar = ttk.Scrollbar(packet_frame, orient="vertical")
-        scrollbar.pack(side="right", fill="y")
-
-        packet_read_text = tk.Text(packet_frame, wrap="none", state="disabled")
-        packet_read_text.pack(side="left", fill="both", expand=True)
-        packet_read_text.configure(yscrollcommand=scrollbar.set)
-        scrollbar.configure(command=packet_read_text.yview)
-
-        control_frame = ttk.Frame(packet_read_window)
-        control_frame.pack(fill="x", padx=8, pady=(0, 8))
-        ttk.Button(control_frame, text="기록 초기화", command=clear_packet_reads).pack(
-            side="right"
-        )
-
-        if packet_read_records:
-            packet_read_text.configure(state="normal")
-            packet_read_text.insert(tk.END, "\n".join(packet_read_records) + "\n")
-            packet_read_text.see(tk.END)
-            packet_read_text.configure(state="disabled")
-
-        def on_close_packet_read_window() -> None:
-            nonlocal packet_read_window, packet_read_text
-            if packet_read_text is not None:
-                packet_read_text.destroy()
-            packet_read_text = None
-            window = packet_read_window
-            packet_read_window = None
-            if window is not None:
-                window.destroy()
-
-        packet_read_window.protocol("WM_DELETE_WINDOW", on_close_packet_read_window)
-
     def process_packet_detection(text: str) -> None:
         nonlocal devlogic_last_detected_at
         nonlocal devlogic_last_packet
@@ -1757,7 +1685,6 @@ def build_gui() -> None:
         nonlocal ui2_waiting_for_new_channel
         nonlocal ui2_waiting_for_normal_channel
         nonlocal ui2_waiting_for_selection
-        append_packet_read(text)
         if "DevLogic" in text:
             devlogic_last_detected_at = time.time()
             (
@@ -1874,7 +1801,6 @@ def build_gui() -> None:
 
     update_packet_capture_button()
     packet_capture_button.configure(command=toggle_packet_capture)
-    packet_read_button.configure(command=show_packet_read_window)
     test_button.configure(command=show_test_window)
     record_button.configure(command=show_ui2_record_window)
     poll_devlogic_alert()
