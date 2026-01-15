@@ -248,20 +248,102 @@ def build_gui() -> None:
     root = tk.Tk()
     root.title("단계별 자동화")
     root.attributes("-topmost", True)
+    hud_colors = {
+        "bg": "#050b12",
+        "panel": "#0b1a2b",
+        "accent": "#00e5ff",
+        "accent_soft": "#00b3c8",
+        "text": "#d6f7ff",
+        "muted": "#6ad7e8",
+        "entry_bg": "#07131f",
+        "button_bg": "#0f2a3f",
+        "button_active": "#144464",
+        "warning": "#ff7b54",
+        "success": "#3cff8b",
+    }
+
+    root.configure(bg=hud_colors["bg"])
+    root.option_add("*Font", ("Consolas", 10))
+    root.option_add("*Background", hud_colors["panel"])
+    root.option_add("*Foreground", hud_colors["text"])
+    root.option_add("*Frame.Background", hud_colors["panel"])
+    root.option_add("*Label.Background", hud_colors["panel"])
+    root.option_add("*Label.Foreground", hud_colors["text"])
+    root.option_add("*Entry.Background", hud_colors["entry_bg"])
+    root.option_add("*Entry.Foreground", hud_colors["text"])
+    root.option_add("*Entry.InsertBackground", hud_colors["accent"])
+    root.option_add("*Button.Background", hud_colors["button_bg"])
+    root.option_add("*Button.Foreground", hud_colors["accent"])
+    root.option_add("*Button.ActiveBackground", hud_colors["button_active"])
+    root.option_add("*Button.ActiveForeground", hud_colors["accent"])
+    root.option_add("*Button.Relief", "ridge")
+    root.option_add("*Checkbutton.Background", hud_colors["panel"])
+    root.option_add("*Checkbutton.Foreground", hud_colors["text"])
+    root.option_add("*Checkbutton.SelectColor", hud_colors["bg"])
+    root.option_add("*LabelFrame.Background", hud_colors["panel"])
+    root.option_add("*LabelFrame.Foreground", hud_colors["accent"])
+    root.option_add("*LabelFrame.Label.Background", hud_colors["panel"])
+    root.option_add("*LabelFrame.Label.Foreground", hud_colors["accent"])
+
+    hud_style = ttk.Style(root)
+    hud_style.theme_use("clam")
+    hud_style.configure(
+        "TLabel",
+        background=hud_colors["panel"],
+        foreground=hud_colors["text"],
+    )
+    hud_style.configure(
+        "TFrame",
+        background=hud_colors["panel"],
+    )
+    hud_style.configure(
+        "TButton",
+        background=hud_colors["button_bg"],
+        foreground=hud_colors["accent"],
+        borderwidth=1,
+        relief="ridge",
+    )
+    hud_style.map(
+        "TButton",
+        background=[("active", hud_colors["button_active"])],
+        foreground=[("active", hud_colors["accent"])],
+    )
+    hud_style.configure(
+        "TLabelframe",
+        background=hud_colors["panel"],
+        foreground=hud_colors["accent"],
+        borderwidth=1,
+        relief="ridge",
+    )
+    hud_style.configure(
+        "TLabelframe.Label",
+        background=hud_colors["panel"],
+        foreground=hud_colors["accent"],
+    )
+    hud_style.configure(
+        "Treeview",
+        background=hud_colors["entry_bg"],
+        fieldbackground=hud_colors["entry_bg"],
+        foreground=hud_colors["text"],
+        bordercolor=hud_colors["accent_soft"],
+        borderwidth=1,
+    )
+    hud_style.map(
+        "Treeview",
+        background=[("selected", hud_colors["button_active"])],
+        foreground=[("selected", hud_colors["text"])],
+    )
+    hud_style.configure(
+        "Treeview.Heading",
+        background=hud_colors["button_bg"],
+        foreground=hud_colors["accent"],
+    )
 
     saved_state = load_app_state()
 
     status_var = tk.StringVar()
     devlogic_alert_var = tk.StringVar(value="")
     devlogic_packet_var = tk.StringVar(value="")
-    overlay_window: tk.Toplevel | None = None
-    overlay_drag_offset: tuple[int, int] = (0, 0)
-    try:
-        overlay_default_x = int(saved_state.get("overlay_x", 80))
-        overlay_default_y = int(saved_state.get("overlay_y", 40))
-    except (TypeError, ValueError):
-        overlay_default_x, overlay_default_y = 80, 40
-    overlay_position: dict[str, int] = {"x": overlay_default_x, "y": overlay_default_y}
     ui_mode = tk.StringVar(value=str(saved_state.get("ui_mode", "1")))
     f2_before_esc_var = tk.StringVar(value=str(saved_state.get("delay_f2_before_esc_ms", "0")))
     f2_before_pos1_var = tk.StringVar(value=str(saved_state.get("delay_f2_before_pos1_ms", "0")))
@@ -470,8 +552,6 @@ def build_gui() -> None:
     action_frame = tk.Frame(top_bar)
     action_frame.pack(side="right", padx=6)
 
-    overlay_toggle_button = tk.Button(action_frame, text="오버레이로 보기", width=12)
-    overlay_toggle_button.pack(side="right", padx=(0, 4))
     content_frame = tk.Frame(root)
     content_frame.pack(fill="both", expand=True)
 
@@ -638,123 +718,27 @@ def build_gui() -> None:
     packet_capture_button = tk.Button(action_frame, text="패킷캡쳐 시작", width=12)
     packet_capture_button.pack(side="right", padx=(0, 4))
 
-    status_label = tk.Label(root, textvariable=status_var, fg="#006400")
+    status_label = tk.Label(
+        root,
+        textvariable=status_var,
+        fg=hud_colors["success"],
+        bg=hud_colors["bg"],
+    )
     status_label.pack(pady=(0, 4))
-    devlogic_label = tk.Label(root, textvariable=devlogic_alert_var, fg="red")
+    devlogic_label = tk.Label(
+        root,
+        textvariable=devlogic_alert_var,
+        fg=hud_colors["warning"],
+        bg=hud_colors["bg"],
+    )
     devlogic_label.pack(pady=(0, 2))
-    devlogic_packet_label = tk.Label(root, textvariable=devlogic_packet_var, fg="red")
+    devlogic_packet_label = tk.Label(
+        root,
+        textvariable=devlogic_packet_var,
+        fg=hud_colors["warning"],
+        bg=hud_colors["bg"],
+    )
     devlogic_packet_label.pack(pady=(0, 6))
-
-    def update_overlay_position_from_window() -> None:
-        nonlocal overlay_position
-        if overlay_window is None or not tk.Toplevel.winfo_exists(overlay_window):
-            return
-        overlay_position = {
-            "x": overlay_window.winfo_x(),
-            "y": overlay_window.winfo_y(),
-        }
-
-    def close_overlay_and_show_main() -> None:
-        nonlocal overlay_window
-        update_overlay_position_from_window()
-        if overlay_window is not None and tk.Toplevel.winfo_exists(overlay_window):
-            overlay_window.destroy()
-        overlay_window = None
-        root.deiconify()
-        root.lift()
-
-    def start_overlay_drag(event: tk.Event[tk.Widget]) -> None:  # type: ignore[type-arg]
-        nonlocal overlay_drag_offset
-        if overlay_window is None:
-            return
-        overlay_drag_offset = (
-            event.x_root - overlay_window.winfo_x(),
-            event.y_root - overlay_window.winfo_y(),
-        )
-
-    def drag_overlay(event: tk.Event[tk.Widget]) -> None:  # type: ignore[type-arg]
-        if overlay_window is None:
-            return
-        new_x = event.x_root - overlay_drag_offset[0]
-        new_y = event.y_root - overlay_drag_offset[1]
-        overlay_window.geometry(f"+{new_x}+{new_y}")
-        overlay_position["x"] = new_x
-        overlay_position["y"] = new_y
-
-    def show_overlay() -> None:
-        nonlocal overlay_window
-        if overlay_window is not None and tk.Toplevel.winfo_exists(overlay_window):
-            overlay_window.deiconify()
-            overlay_window.lift()
-            root.withdraw()
-            return
-
-        overlay_window = tk.Toplevel(root)
-        overlay_window.overrideredirect(True)
-        overlay_window.attributes("-topmost", True)
-        overlay_window.attributes("-alpha", 0.88)
-        overlay_window.geometry(f"+{overlay_position['x']}+{overlay_position['y']}")
-
-        card = tk.Frame(overlay_window, bg="#1f1f1f", bd=2, relief="ridge")
-        card.pack(padx=4, pady=4)
-
-        for widget in (card,):
-            widget.bind("<ButtonPress-1>", start_overlay_drag)
-            widget.bind("<B1-Motion>", drag_overlay)
-
-        header = tk.Label(
-            card,
-            text="상태 오버레이",
-            fg="#ffffff",
-            bg="#1f1f1f",
-            font=("Arial", 10, "bold"),
-        )
-        header.pack(anchor="w", padx=10, pady=(6, 2))
-        header.bind("<ButtonPress-1>", start_overlay_drag)
-        header.bind("<B1-Motion>", drag_overlay)
-
-        tk.Label(
-            card,
-            textvariable=status_var,
-            fg="#00a050",
-            bg="#1f1f1f",
-            anchor="w",
-            font=("Arial", 10),
-        ).pack(fill="x", padx=10, pady=(0, 2))
-
-        tk.Label(
-            card,
-            textvariable=devlogic_alert_var,
-            fg="#ff4d4f",
-            bg="#1f1f1f",
-            anchor="w",
-            font=("Arial", 10, "bold"),
-        ).pack(fill="x", padx=10, pady=(0, 0))
-
-        tk.Label(
-            card,
-            textvariable=devlogic_packet_var,
-            fg="#ff4d4f",
-            bg="#1f1f1f",
-            anchor="w",
-            font=("Arial", 10),
-        ).pack(fill="x", padx=10, pady=(0, 6))
-
-        button_bar = tk.Frame(card, bg="#1f1f1f")
-        button_bar.pack(fill="x", padx=6, pady=(0, 6))
-        tk.Button(
-            button_bar,
-            text="메인 UI 열기",
-            command=close_overlay_and_show_main,
-            bg="#2e2e2e",
-            fg="#ffffff",
-            relief="flat",
-            highlightthickness=0,
-        ).pack(side="right", padx=(4, 0))
-
-        overlay_window.bind("<ButtonPress-1>", start_overlay_drag)
-        overlay_window.bind("<B1-Motion>", drag_overlay)
-        root.withdraw()
 
     def set_status_async(message: str) -> None:
         root.after(0, status_var.set, message)
@@ -1061,7 +1045,6 @@ def build_gui() -> None:
                 self._buffer = self._buffer[match.end() :]
 
     def collect_app_state() -> dict:
-        update_overlay_position_from_window()
         store_current_pos3_mode_values()
         coordinates: dict[str, dict[str, str]] = {}
         for key, (x_entry, y_entry) in {**entries_ui1, **entries_ui2}.items():
@@ -1092,8 +1075,6 @@ def build_gui() -> None:
             "channel_timeout_ms": channel_timeout_var.get(),
             "newline_after_pos2": newline_var.get(),
             "ui2_automation_enabled": ui2_automation_var.get(),
-            "overlay_x": overlay_position["x"],
-            "overlay_y": overlay_position["y"],
         }
 
     def build_pattern_table(names: list[str]) -> tuple[str | None, list[list[str]]]:
@@ -1202,7 +1183,7 @@ def build_gui() -> None:
             refresh_test_treeview()
             return
 
-        test_window = tk.Toplevel(root)
+        test_window = tk.Toplevel(root, bg=hud_colors["panel"])
         test_window.title("테스트")
         test_window.geometry("520x500")
         test_window.resizable(True, True)
@@ -1241,7 +1222,15 @@ def build_gui() -> None:
         detail_frame.pack(fill="both", expand=True, padx=8, pady=(0, 8))
         detail_scroll = ttk.Scrollbar(detail_frame, orient="vertical")
         detail_scroll.pack(side="right", fill="y")
-        detail_text = tk.Text(detail_frame, height=6, wrap="none", state="disabled")
+        detail_text = tk.Text(
+            detail_frame,
+            height=6,
+            wrap="none",
+            state="disabled",
+            background=hud_colors["entry_bg"],
+            foreground=hud_colors["text"],
+            insertbackground=hud_colors["accent"],
+        )
         detail_text.pack(fill="both", expand=True)
         detail_text.configure(yscrollcommand=detail_scroll.set)
         detail_scroll.configure(command=detail_text.yview)
@@ -1591,7 +1580,6 @@ def build_gui() -> None:
     packet_capture_button.configure(command=toggle_packet_capture)
     new_channel_test_button.configure(command=trigger_new_channel_test)
 
-    overlay_toggle_button.configure(command=show_overlay)
     test_button.configure(command=show_test_window)
     poll_devlogic_alert()
 
@@ -1638,7 +1626,6 @@ def build_gui() -> None:
         hotkey_listener.start()
 
     def on_close() -> None:
-        close_overlay_and_show_main()
         save_app_state(collect_app_state())
         if hotkey_listener is not None:
             hotkey_listener.stop()
