@@ -1,6 +1,6 @@
 """대칭 전력 마우스/키보드 자동화를 위한 간단한 GUI.
 
-macOS에서 최상단에 고정된 창을 제공하며, F1/F2 단축키로
+macOS에서 최상단에 고정된 창을 제공하며, F9/F10 단축키로
 순차 동작을 제어합니다.
 """
 
@@ -1498,7 +1498,7 @@ def build_gui() -> None:
 
         def start(self, newline_mode: bool) -> None:
             if self.running:
-                messagebox.showinfo("매크로", "F3 매크로가 이미 실행 중입니다.")
+                messagebox.showinfo("매크로", "F10 매크로가 이미 실행 중입니다.")
                 return
             self.running = True
             self._clear_queue()
@@ -1562,14 +1562,14 @@ def build_gui() -> None:
         def _run_sequence(self) -> None:
             try:
                 while self.running:
-                    self._set_status("F3: F2 기능 실행 중…")
+                    self._set_status("F10: F2 기능 실행 중…")
                     self._run_on_main(
                         lambda: controller.reset_and_run_first(
                             newline_mode=self.newline_mode
                         )
                     )
 
-                    self._set_status("F3: 채널명 감시 중…")
+                    self._set_status("F10: 채널명 감시 중…")
                     self._clear_queue()
                     timeout_sec = self._delay_seconds(get_channel_timeout_ms())
                     first_detection = self._wait_for_detection(timeout_sec)
@@ -1579,12 +1579,12 @@ def build_gui() -> None:
                         break
 
                     if first_detection is None:
-                        self._set_status("F3: 채널명이 발견되지 않았습니다. 재시도합니다…")
+                        self._set_status("F10: 채널명이 발견되지 않았습니다. 재시도합니다…")
                         continue
 
                     first_time, is_new = first_detection
                     if is_new:
-                        self._set_status("F3: 새 채널명 기록, F1 실행 중…")
+                        self._set_status("F10: 새 채널명 기록, F1 실행 중…")
                         self._run_on_main(
                             lambda: controller.run_step(newline_mode=self.newline_mode)
                         )
@@ -1592,7 +1592,7 @@ def build_gui() -> None:
 
                     watch_interval = self._delay_seconds(get_channel_watch_interval_ms())
                     if watch_interval <= 0:
-                        self._set_status("F3: 새 채널명이 없어 재시작합니다…")
+                        self._set_status("F10: 새 채널명이 없어 재시작합니다…")
                         continue
 
                     deadline = first_time + watch_interval
@@ -1621,13 +1621,13 @@ def build_gui() -> None:
                         break
 
                     if new_channel_found:
-                        self._set_status("F3: 새 채널명 기록, F1 실행 중…")
+                        self._set_status("F10: 새 채널명 기록, F1 실행 중…")
                         self._run_on_main(
                             lambda: controller.run_step(newline_mode=self.newline_mode)
                         )
                         break
 
-                    self._set_status("F3: 새 채널명이 없어 재시작합니다…")
+                    self._set_status("F10: 새 채널명이 없어 재시작합니다…")
             finally:
                 self.running = False
                 self._run_on_main(controller._update_status)
@@ -1665,11 +1665,11 @@ def build_gui() -> None:
 
     def append_packet_read(text: str) -> None:
         nonlocal packet_read_text
+        if packet_read_window is None or not tk.Toplevel.winfo_exists(packet_read_window):
+            return
         sanitized = sanitize_packet_text(text)
         packet_read_records.append(sanitized)
         if packet_read_text is None:
-            return
-        if packet_read_window is None or not tk.Toplevel.winfo_exists(packet_read_window):
             return
         packet_read_text.configure(state="normal")
         packet_read_text.insert(tk.END, sanitized + "\n")
@@ -1862,33 +1862,27 @@ def build_gui() -> None:
         root.after(0, _runner)
 
     def on_hotkey_press(key: keyboard.Key) -> None:
-        if key == keyboard.Key.f1:
-            run_on_ui("1", controller.run_step)
-        elif key == keyboard.Key.f2:
+        if key == keyboard.Key.f9:
             run_on_ui("1", controller.reset_and_run_first)
-        elif key == keyboard.Key.f3:
-            def _toggle_f3() -> None:
+        elif key == keyboard.Key.f10:
+            def _toggle_f10() -> None:
                 switch_ui("1")
                 if channel_detection_sequence.running:
                     channel_detection_sequence.stop()
-                    status_var.set("F3 매크로가 종료되었습니다.")
+                    status_var.set("F10 매크로가 종료되었습니다.")
                     controller._update_status()
                 else:
                     channel_detection_sequence.start(newline_var.get())
-            root.after(0, _toggle_f3)
-        elif key == keyboard.Key.f4:
+            root.after(0, _toggle_f10)
+        elif key == keyboard.Key.f11:
             run_on_ui("2", run_ui2_f4)
-        elif key == keyboard.Key.f5:
-            run_on_ui("2", run_ui2_f5)
-        elif key == keyboard.Key.f6:
-            def _handle_f6() -> None:
+        elif key == keyboard.Key.f12:
+            def _handle_f12() -> None:
                 if ui2_automation_active and ui2_automation_var.get():
-                    stop_ui2_automation("자동화 모드: F6 입력으로 중단되었습니다.")
+                    stop_ui2_automation("자동화 모드: F12 입력으로 중단되었습니다.")
                 else:
                     run_ui2_f6()
-            run_on_ui("2", _handle_f6)
-        elif key == keyboard.Key.f7:
-            run_on_ui("1", cycle_pos3_mode)
+            run_on_ui("2", _handle_f12)
 
     def start_hotkey_listener() -> None:
         nonlocal hotkey_listener
