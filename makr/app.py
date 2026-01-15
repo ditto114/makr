@@ -11,6 +11,7 @@ import json
 import re
 import shutil
 import subprocess
+import sys
 import threading
 import time
 import tkinter as tk
@@ -161,23 +162,45 @@ class SoundPlayer:
     def play_once(self) -> None:
         if not self._sound_path.exists():
             return
+        suffix = self._sound_path.suffix.lower()
 
         def _run() -> None:
-            if self._winsound is not None:
+            if self._winsound is not None and suffix == ".wav":
                 self._winsound.PlaySound(
                     str(self._sound_path),
                     self._winsound.SND_FILENAME,
                 )
                 return
+            if sys.platform.startswith("win"):
+                subprocess.run(
+                    [
+                        "powershell",
+                        "-NoProfile",
+                        "-Command",
+                        (
+                            "$player = New-Object -ComObject WMPlayer.OCX.7;"
+                            f"$player.URL = '{self._sound_path}';"
+                            "$player.controls.play();"
+                            "Start-Sleep -Milliseconds 500;"
+                        ),
+                    ],
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                return
             player = None
-            for cmd in ("afplay", "aplay"):
+            for cmd in ("afplay", "ffplay", "mpg123", "play", "aplay"):
                 if shutil.which(cmd):
                     player = cmd
                     break
             if player is None:
                 return
+            command = [player, str(self._sound_path)]
+            if player == "ffplay":
+                command = [player, "-nodisp", "-autoexit", str(self._sound_path)]
             subprocess.run(
-                [player, str(self._sound_path)],
+                command,
                 check=False,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
