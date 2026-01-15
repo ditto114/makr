@@ -254,14 +254,6 @@ def build_gui() -> None:
     status_var = tk.StringVar()
     devlogic_alert_var = tk.StringVar(value="")
     devlogic_packet_var = tk.StringVar(value="")
-    overlay_window: tk.Toplevel | None = None
-    overlay_drag_offset: tuple[int, int] = (0, 0)
-    try:
-        overlay_default_x = int(saved_state.get("overlay_x", 80))
-        overlay_default_y = int(saved_state.get("overlay_y", 40))
-    except (TypeError, ValueError):
-        overlay_default_x, overlay_default_y = 80, 40
-    overlay_position: dict[str, int] = {"x": overlay_default_x, "y": overlay_default_y}
     ui_mode = tk.StringVar(value=str(saved_state.get("ui_mode", "1")))
     f2_before_esc_var = tk.StringVar(value=str(saved_state.get("delay_f2_before_esc_ms", "0")))
     f2_before_pos1_var = tk.StringVar(value=str(saved_state.get("delay_f2_before_pos1_ms", "0")))
@@ -468,15 +460,30 @@ def build_gui() -> None:
     top_bar = tk.Frame(root)
     top_bar.pack(fill="x", pady=(6, 4))
     action_frame = tk.Frame(top_bar)
-    action_frame.pack(side="right", padx=6)
+    action_frame.pack(side="left", padx=6)
 
-    overlay_toggle_button = tk.Button(action_frame, text="오버레이로 보기", width=12)
-    overlay_toggle_button.pack(side="right", padx=(0, 4))
     content_frame = tk.Frame(root)
     content_frame.pack(fill="both", expand=True)
 
-    ui1_frame = tk.Frame(content_frame)
-    ui2_frame = tk.Frame(content_frame)
+    tab_active_bg = "#ffffff"
+    tab_inactive_bg = "#e6e6e6"
+    tab_border = "#bdbdbd"
+
+    tab_bar = tk.Frame(content_frame, bg=tab_active_bg)
+    tab_bar.pack(fill="x", padx=6, pady=(0, 0))
+    tab_button_holder = tk.Frame(tab_bar, bg=tab_active_bg)
+    tab_button_holder.pack(side="left")
+
+    panel_frame = tk.Frame(
+        content_frame,
+        bg=tab_active_bg,
+        highlightthickness=1,
+        highlightbackground=tab_border,
+    )
+    panel_frame.pack(fill="both", expand=True, padx=6, pady=(0, 6))
+
+    ui1_frame = tk.Frame(panel_frame, bg=tab_active_bg)
+    ui2_frame = tk.Frame(panel_frame, bg=tab_active_bg)
 
     def add_step_delay_row(parent: tk.Widget, title: str, steps: list[tuple[tk.StringVar, str]]) -> None:
         row = tk.Frame(parent)
@@ -626,17 +633,11 @@ def build_gui() -> None:
     def cycle_pos3_mode() -> None:
         set_pos3_mode(pos3_mode_var.get() + 1)
 
-    ui_toggle_button = tk.Button(top_bar, text="UI 전환", width=14)
-    ui_toggle_button.pack(side="left", padx=(10, 4))
-
-    test_button = tk.Button(action_frame, text="테스트", width=12)
-    test_button.pack(side="right", padx=(0, 4))
-
-    new_channel_test_button = tk.Button(action_frame, text="신규채널테스트", width=12)
-    new_channel_test_button.pack(side="right", padx=(0, 4))
-
     packet_capture_button = tk.Button(action_frame, text="패킷캡쳐 시작", width=12)
-    packet_capture_button.pack(side="right", padx=(0, 4))
+    packet_capture_button.pack(side="left", padx=(0, 6))
+
+    test_button = tk.Button(action_frame, text="채널목록", width=12)
+    test_button.pack(side="left")
 
     status_label = tk.Label(root, textvariable=status_var, fg="#006400")
     status_label.pack(pady=(0, 4))
@@ -644,117 +645,6 @@ def build_gui() -> None:
     devlogic_label.pack(pady=(0, 2))
     devlogic_packet_label = tk.Label(root, textvariable=devlogic_packet_var, fg="red")
     devlogic_packet_label.pack(pady=(0, 6))
-
-    def update_overlay_position_from_window() -> None:
-        nonlocal overlay_position
-        if overlay_window is None or not tk.Toplevel.winfo_exists(overlay_window):
-            return
-        overlay_position = {
-            "x": overlay_window.winfo_x(),
-            "y": overlay_window.winfo_y(),
-        }
-
-    def close_overlay_and_show_main() -> None:
-        nonlocal overlay_window
-        update_overlay_position_from_window()
-        if overlay_window is not None and tk.Toplevel.winfo_exists(overlay_window):
-            overlay_window.destroy()
-        overlay_window = None
-        root.deiconify()
-        root.lift()
-
-    def start_overlay_drag(event: tk.Event[tk.Widget]) -> None:  # type: ignore[type-arg]
-        nonlocal overlay_drag_offset
-        if overlay_window is None:
-            return
-        overlay_drag_offset = (
-            event.x_root - overlay_window.winfo_x(),
-            event.y_root - overlay_window.winfo_y(),
-        )
-
-    def drag_overlay(event: tk.Event[tk.Widget]) -> None:  # type: ignore[type-arg]
-        if overlay_window is None:
-            return
-        new_x = event.x_root - overlay_drag_offset[0]
-        new_y = event.y_root - overlay_drag_offset[1]
-        overlay_window.geometry(f"+{new_x}+{new_y}")
-        overlay_position["x"] = new_x
-        overlay_position["y"] = new_y
-
-    def show_overlay() -> None:
-        nonlocal overlay_window
-        if overlay_window is not None and tk.Toplevel.winfo_exists(overlay_window):
-            overlay_window.deiconify()
-            overlay_window.lift()
-            root.withdraw()
-            return
-
-        overlay_window = tk.Toplevel(root)
-        overlay_window.overrideredirect(True)
-        overlay_window.attributes("-topmost", True)
-        overlay_window.attributes("-alpha", 0.88)
-        overlay_window.geometry(f"+{overlay_position['x']}+{overlay_position['y']}")
-
-        card = tk.Frame(overlay_window, bg="#1f1f1f", bd=2, relief="ridge")
-        card.pack(padx=4, pady=4)
-
-        for widget in (card,):
-            widget.bind("<ButtonPress-1>", start_overlay_drag)
-            widget.bind("<B1-Motion>", drag_overlay)
-
-        header = tk.Label(
-            card,
-            text="상태 오버레이",
-            fg="#ffffff",
-            bg="#1f1f1f",
-            font=("Arial", 10, "bold"),
-        )
-        header.pack(anchor="w", padx=10, pady=(6, 2))
-        header.bind("<ButtonPress-1>", start_overlay_drag)
-        header.bind("<B1-Motion>", drag_overlay)
-
-        tk.Label(
-            card,
-            textvariable=status_var,
-            fg="#00a050",
-            bg="#1f1f1f",
-            anchor="w",
-            font=("Arial", 10),
-        ).pack(fill="x", padx=10, pady=(0, 2))
-
-        tk.Label(
-            card,
-            textvariable=devlogic_alert_var,
-            fg="#ff4d4f",
-            bg="#1f1f1f",
-            anchor="w",
-            font=("Arial", 10, "bold"),
-        ).pack(fill="x", padx=10, pady=(0, 0))
-
-        tk.Label(
-            card,
-            textvariable=devlogic_packet_var,
-            fg="#ff4d4f",
-            bg="#1f1f1f",
-            anchor="w",
-            font=("Arial", 10),
-        ).pack(fill="x", padx=10, pady=(0, 6))
-
-        button_bar = tk.Frame(card, bg="#1f1f1f")
-        button_bar.pack(fill="x", padx=6, pady=(0, 6))
-        tk.Button(
-            button_bar,
-            text="메인 UI 열기",
-            command=close_overlay_and_show_main,
-            bg="#2e2e2e",
-            fg="#ffffff",
-            relief="flat",
-            highlightthickness=0,
-        ).pack(side="right", padx=(4, 0))
-
-        overlay_window.bind("<ButtonPress-1>", start_overlay_drag)
-        overlay_window.bind("<B1-Motion>", drag_overlay)
-        root.withdraw()
 
     def set_status_async(message: str) -> None:
         root.after(0, status_var.set, message)
@@ -768,8 +658,43 @@ def build_gui() -> None:
         f6_interval=_make_delay_getter(f6_interval_var, "(F6) 반복 간격", 100),
     )
 
-    ui1_frame.pack_forget()
-    ui2_frame.pack_forget()
+    tab_button_1 = tk.Button(
+        tab_button_holder,
+        text="채변",
+        width=10,
+        takefocus=True,
+    )
+    tab_button_1.pack(side="left", padx=(0, 6), pady=(0, 0))
+
+    tab_button_2 = tk.Button(
+        tab_button_holder,
+        text="월재",
+        width=10,
+        takefocus=True,
+    )
+    tab_button_2.pack(side="left", pady=(0, 0))
+
+    def _style_tab_button(button: tk.Button, *, active: bool) -> None:
+        if active:
+            button.configure(
+                bg=tab_active_bg,
+                fg="#000000",
+                relief="solid",
+                bd=1,
+                highlightthickness=0,
+                activebackground=tab_active_bg,
+                activeforeground="#000000",
+            )
+        else:
+            button.configure(
+                bg=tab_inactive_bg,
+                fg="#555555",
+                relief="ridge",
+                bd=1,
+                highlightthickness=0,
+                activebackground="#dcdcdc",
+                activeforeground="#333333",
+            )
 
     def switch_ui(mode: str) -> None:
         target = "2" if mode == "2" else "1"
@@ -777,17 +702,25 @@ def build_gui() -> None:
         ui1_frame.pack_forget()
         ui2_frame.pack_forget()
         if target == "1":
+            _style_tab_button(tab_button_1, active=True)
+            _style_tab_button(tab_button_2, active=False)
             ui1_frame.pack(fill="both", expand=True)
-            ui_toggle_button.configure(text="2번 UI로 전환")
         else:
+            _style_tab_button(tab_button_1, active=False)
+            _style_tab_button(tab_button_2, active=True)
             ui2_frame.pack(fill="both", expand=True)
-            ui_toggle_button.configure(text="1번 UI로 전환")
 
-    def toggle_ui() -> None:
-        switch_ui("2" if ui_mode.get() == "1" else "1")
+    def _bind_tab_activate(button: tk.Button, mode: str) -> None:
+        def _activate(event: tk.Event[tk.Widget] | None = None) -> None:
+            switch_ui(mode)
 
-    ui_toggle_button.configure(command=toggle_ui)
-    switch_ui(ui_mode.get())
+        button.configure(command=_activate)
+        button.bind("<Return>", _activate)
+        button.bind("<space>", _activate)
+
+    _bind_tab_activate(tab_button_1, "1")
+    _bind_tab_activate(tab_button_2, "2")
+    switch_ui("1")
     update_pos3_mode_label()
     apply_newline_for_pos3_mode()
     pos3_mode_button.configure(command=cycle_pos3_mode)
@@ -1061,7 +994,6 @@ def build_gui() -> None:
                 self._buffer = self._buffer[match.end() :]
 
     def collect_app_state() -> dict:
-        update_overlay_position_from_window()
         store_current_pos3_mode_values()
         coordinates: dict[str, dict[str, str]] = {}
         for key, (x_entry, y_entry) in {**entries_ui1, **entries_ui2}.items():
@@ -1092,8 +1024,6 @@ def build_gui() -> None:
             "channel_timeout_ms": channel_timeout_var.get(),
             "newline_after_pos2": newline_var.get(),
             "ui2_automation_enabled": ui2_automation_var.get(),
-            "overlay_x": overlay_position["x"],
-            "overlay_y": overlay_position["y"],
         }
 
     def build_pattern_table(names: list[str]) -> tuple[str | None, list[list[str]]]:
@@ -1203,7 +1133,7 @@ def build_gui() -> None:
             return
 
         test_window = tk.Toplevel(root)
-        test_window.title("테스트")
+        test_window.title("채널목록")
         test_window.geometry("520x500")
         test_window.resizable(True, True)
 
@@ -1519,10 +1449,6 @@ def build_gui() -> None:
                 run_on_ui("2", lambda: run_ui2_f6(force_start=True))
         channel_segment_recorder.feed(text)
 
-    def trigger_new_channel_test() -> None:
-        test_payload = "DevLogic" + ("A" * 25)
-        process_packet_detection(test_payload)
-
     def poll_devlogic_alert() -> None:
         interval_ms = get_channel_watch_interval_ms()
         visible = ui_mode.get() == "2" and devlogic_last_detected_at is not None
@@ -1589,9 +1515,6 @@ def build_gui() -> None:
 
     update_packet_capture_button()
     packet_capture_button.configure(command=toggle_packet_capture)
-    new_channel_test_button.configure(command=trigger_new_channel_test)
-
-    overlay_toggle_button.configure(command=show_overlay)
     test_button.configure(command=show_test_window)
     poll_devlogic_alert()
 
@@ -1638,7 +1561,6 @@ def build_gui() -> None:
         hotkey_listener.start()
 
     def on_close() -> None:
-        close_overlay_and_show_main()
         save_app_state(collect_app_state())
         if hotkey_listener is not None:
             hotkey_listener.stop()
