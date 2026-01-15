@@ -476,6 +476,8 @@ def build_gui() -> None:
     top_bar.pack(fill="x", pady=(6, 4))
     action_frame = tk.Frame(top_bar)
     action_frame.pack(side="left", padx=6)
+    record_frame = tk.Frame(top_bar)
+    record_frame.pack(side="right", padx=6)
 
     content_frame = tk.Frame(root)
     content_frame.pack(fill="both", expand=True)
@@ -657,12 +659,13 @@ def build_gui() -> None:
     test_button = tk.Button(action_frame, text="채널목록", width=12)
     test_button.pack(side="left")
 
+    record_button = tk.Button(record_frame, text="월재기록", width=12)
+    record_button.pack(side="right")
+
     status_label = tk.Label(root, textvariable=status_var, fg="#006400")
     status_label.pack(pady=(0, 4))
     devlogic_label = tk.Label(root, textvariable=devlogic_alert_var, fg="red")
-    devlogic_label.pack(pady=(0, 2))
-    devlogic_packet_label = tk.Label(root, textvariable=devlogic_packet_var, fg="red")
-    devlogic_packet_label.pack(pady=(0, 6))
+    devlogic_label.pack(pady=(0, 6))
 
     def set_status_async(message: str) -> None:
         root.after(0, status_var.set, message)
@@ -840,15 +843,34 @@ def build_gui() -> None:
         delay_before_enter = ui_two_delay_config.f4_before_enter()
 
         def _run() -> None:
-            set_status_async("F4: ··· → 🔃 실행 중…")
             pyautogui.click(*pos11)
             _sleep_ms_ui2(delay_between)
             pyautogui.click(*pos12)
             _sleep_ms_ui2(delay_before_enter)
             pyautogui.press("enter")
-            set_status_async("F4: 실행 완료")
 
         return _run
+
+    def run_ui2_f4_batch(
+        action: Callable[[], None],
+        *,
+        repeat_count: int = 10,
+        interval_sec: float = 0.2,
+        start_message: str | None = None,
+        stop_message: str | None = None,
+    ) -> None:
+        if start_message:
+            set_status_async(start_message)
+
+        def _run() -> None:
+            for idx in range(max(repeat_count, 1)):
+                action()
+                if idx < repeat_count - 1:
+                    time.sleep(max(interval_sec, 0))
+            if stop_message:
+                set_status_async(stop_message)
+
+        threading.Thread(target=_run, daemon=True).start()
 
     def stop_ui2_automation(message: str | None = None) -> None:
         nonlocal ui2_automation_active
@@ -859,6 +881,7 @@ def build_gui() -> None:
         ui2_waiting_for_new_channel = False
         ui2_waiting_for_normal_channel = False
         ui2_waiting_for_selection = False
+        clear_ui2_set_state()
         ui2_f4_automation_task.stop()
         if ui2_repeater_f5.stop():
             set_status_async("F5: 중지되었습니다.")
@@ -886,10 +909,10 @@ def build_gui() -> None:
         action = _build_ui2_f4_action()
         if action is None:
             return
-        set_status_async("자동화 모드: F4 1회 실행 후 채널 대기 시작")
-        threading.Thread(target=action, daemon=True).start()
+        start_new_ui2_set()
+        run_ui2_f4_batch(action)
 
-    def restart_ui2_f4_cycle(message: str) -> None:
+    def restart_ui2_f4_cycle() -> None:
         nonlocal ui2_automation_active
         nonlocal ui2_waiting_for_new_channel
         nonlocal ui2_waiting_for_normal_channel
@@ -901,15 +924,15 @@ def build_gui() -> None:
         ui2_waiting_for_normal_channel = False
         ui2_waiting_for_selection = False
         ui2_automation_active = True
-        set_status_async(message)
-        threading.Thread(target=action, daemon=True).start()
+        start_new_ui2_set()
+        run_ui2_f4_batch(action)
 
-    def restart_ui2_f4_logic(message: str) -> None:
+    def restart_ui2_f4_logic() -> None:
         action = _build_ui2_f4_action()
         if action is None:
             return
-        set_status_async(message)
-        threading.Thread(target=action, daemon=True).start()
+        start_new_ui2_set()
+        run_ui2_f4_batch(action)
 
     def run_ui2_f4() -> None:
         if ui2_automation_var.get():
@@ -923,7 +946,11 @@ def build_gui() -> None:
             return
         if ui2_repeater_f6.stop():
             set_status_async("F6 반복 클릭을 중지했습니다.")
-        threading.Thread(target=action, daemon=True).start()
+        run_ui2_f4_batch(
+            action,
+            start_message="F4: 10회 실행 중…",
+            stop_message="F4: 실행 완료",
+        )
 
     def run_ui2_f5() -> None:
         pos13 = _get_ui2_point("pos13", "로그인")
@@ -974,11 +1001,60 @@ def build_gui() -> None:
     test_channel_names: list[str] = []
     test_channel_name_set: set[str] = set()
     pattern_table_regex = re.compile(r"[A-Z][가-힣]\d{2,3}")
+    ui2_record_window: tk.Toplevel | None = None
+    ui2_record_treeview: ttk.Treeview | None = None
+    ui2_record_items: list[tuple[int, str, str]] = []
+    ui2_set_index = 0
+    ui2_current_set_started_at: float | None = None
 
     def format_timestamp(ts: float) -> str:
         ts_int = int(ts)
         millis = int((ts - ts_int) * 1000)
         return time.strftime('%H:%M:%S', time.localtime(ts)) + f".{millis:03d}"
+
+    def refresh_ui2_record_treeview() -> None:
+        if ui2_record_treeview is None:
+            return
+        for item in ui2_record_treeview.get_children():
+            ui2_record_treeview.delete(item)
+        for set_no, started_at, result in ui2_record_items:
+            ui2_record_treeview.insert(
+                "",
+                "end",
+                text=f"{set_no}세트",
+                values=(started_at, result),
+            )
+
+    def add_ui2_record_item(set_no: int, started_at: float, result: str) -> None:
+        timestamp = format_timestamp(started_at)
+        ui2_record_items.append((set_no, timestamp, result))
+        if ui2_record_treeview is not None:
+            ui2_record_treeview.insert(
+                "",
+                "end",
+                text=f"{set_no}세트",
+                values=(timestamp, result),
+            )
+
+    def start_new_ui2_set() -> None:
+        nonlocal ui2_set_index
+        nonlocal ui2_current_set_started_at
+        ui2_set_index += 1
+        ui2_current_set_started_at = time.time()
+        set_status_async(f"{ui2_set_index}세트 시작")
+
+    def finish_ui2_set(result: str, note: str | None = None) -> None:
+        nonlocal ui2_current_set_started_at
+        if ui2_current_set_started_at is None:
+            return
+        add_ui2_record_item(ui2_set_index, ui2_current_set_started_at, result)
+        ui2_current_set_started_at = None
+        suffix = f" - {note}" if note else ""
+        set_status_async(f"{ui2_set_index}세트 종료 ({result}){suffix}")
+
+    def clear_ui2_set_state() -> None:
+        nonlocal ui2_current_set_started_at
+        ui2_current_set_started_at = None
 
     class ChannelSegmentRecorder:
         anchor_keyword = "ChannelName"
@@ -1277,6 +1353,61 @@ def build_gui() -> None:
 
         test_window.protocol("WM_DELETE_WINDOW", on_close_test_window)
 
+    def show_ui2_record_window() -> None:
+        nonlocal ui2_record_window, ui2_record_treeview
+        if ui2_record_window is not None and tk.Toplevel.winfo_exists(ui2_record_window):
+            ui2_record_window.lift()
+            ui2_record_window.focus_force()
+            refresh_ui2_record_treeview()
+            return
+
+        ui2_record_window = tk.Toplevel(root)
+        ui2_record_window.title("월재기록")
+        ui2_record_window.geometry("360x320")
+        ui2_record_window.resizable(True, True)
+
+        info_label = ttk.Label(
+            ui2_record_window,
+            text="세트 종료 시점마다 시작시간과 결과를 기록합니다.",
+            wraplength=320,
+            justify="left",
+        )
+        info_label.pack(fill="x", padx=8, pady=(8, 4))
+
+        tree = ttk.Treeview(
+            ui2_record_window,
+            columns=("start_time", "result"),
+            show="tree headings",
+            height=10,
+        )
+        tree.heading("#0", text="세트")
+        tree.heading("start_time", text="시작시간")
+        tree.heading("result", text="결과")
+        tree.column("#0", width=60, anchor="center")
+        tree.column("start_time", width=180, anchor="center")
+        tree.column("result", width=80, anchor="center")
+        tree.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+
+        scrollbar = ttk.Scrollbar(ui2_record_window, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y", padx=(0, 8))
+
+        ui2_record_treeview = tree
+        refresh_ui2_record_treeview()
+
+        def on_close_record_window() -> None:
+            nonlocal ui2_record_window, ui2_record_treeview
+            if ui2_record_treeview is not None:
+                for item in ui2_record_treeview.get_children():
+                    ui2_record_treeview.delete(item)
+            ui2_record_treeview = None
+            window = ui2_record_window
+            ui2_record_window = None
+            if window is not None:
+                window.destroy()
+
+        ui2_record_window.protocol("WM_DELETE_WINDOW", on_close_record_window)
+
     class ChannelDetectionSequence:
         def __init__(self) -> None:
             self.running = False
@@ -1539,10 +1670,11 @@ def build_gui() -> None:
                     ui2_waiting_for_normal_channel = True
                     ui2_waiting_for_selection = False
                     ui2_f4_automation_task.stop()
-                    status_var.set("신규채널 감지: 일반 채널을 대기합니다.")
+                    finish_ui2_set("성공", "일반 채널 대기")
                     beep_notifier.start(3)
                 elif ui2_waiting_for_new_channel and devlogic_last_is_normal_channel:
-                    restart_ui2_f4_logic("일반채널 감지: F4 로직 재실행")
+                    finish_ui2_set("실패", "F4 로직 재실행")
+                    restart_ui2_f4_logic()
                 elif ui2_waiting_for_normal_channel and devlogic_last_is_normal_channel:
                     ui2_waiting_for_normal_channel = False
                     ui2_waiting_for_selection = True
@@ -1631,6 +1763,7 @@ def build_gui() -> None:
     packet_capture_button.configure(command=toggle_packet_capture)
     packet_read_button.configure(command=show_packet_read_window)
     test_button.configure(command=show_test_window)
+    record_button.configure(command=show_ui2_record_window)
     poll_devlogic_alert()
 
     def run_on_ui(mode: str, action: Callable[[], None]) -> None:
