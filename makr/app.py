@@ -875,9 +875,6 @@ def build_gui() -> None:
         if ui2_automation_active:
             set_status_async("자동화 모드: 이미 실행 중입니다.")
             return
-        action = _build_ui2_f4_action()
-        if action is None:
-            return
         if ui2_repeater_f5.stop():
             set_status_async("F5: 중지되었습니다.")
         if ui2_repeater_f6.stop():
@@ -886,12 +883,26 @@ def build_gui() -> None:
         ui2_waiting_for_normal_channel = False
         ui2_waiting_for_selection = False
         ui2_automation_active = True
-        ui2_f4_automation_task.start(
-            action,
-            0.5,
-            start_message="자동화 모드: F4 반복 시작",
-            stop_message="자동화 모드: 중지되었습니다.",
-        )
+        action = _build_ui2_f4_action()
+        if action is None:
+            return
+        set_status_async("자동화 모드: F4 1회 실행 후 채널 대기 시작")
+        threading.Thread(target=action, daemon=True).start()
+
+    def restart_ui2_f4_cycle(message: str) -> None:
+        nonlocal ui2_automation_active
+        nonlocal ui2_waiting_for_new_channel
+        nonlocal ui2_waiting_for_normal_channel
+        nonlocal ui2_waiting_for_selection
+        action = _build_ui2_f4_action()
+        if action is None:
+            return
+        ui2_waiting_for_new_channel = True
+        ui2_waiting_for_normal_channel = False
+        ui2_waiting_for_selection = False
+        ui2_automation_active = True
+        set_status_async(message)
+        threading.Thread(target=action, daemon=True).start()
 
     def run_ui2_f4() -> None:
         if ui2_automation_var.get():
@@ -1520,9 +1531,11 @@ def build_gui() -> None:
                     ui2_waiting_for_new_channel = False
                     ui2_waiting_for_normal_channel = True
                     ui2_waiting_for_selection = False
-                    if ui2_f4_automation_task.stop():
-                        status_var.set("신규채널 감지: 일반 채널을 대기합니다.")
+                    ui2_f4_automation_task.stop()
+                    status_var.set("신규채널 감지: 일반 채널을 대기합니다.")
                     beep_notifier.start(3)
+                elif ui2_waiting_for_new_channel and devlogic_last_is_normal_channel:
+                    restart_ui2_f4_cycle("일반채널 감지: F4 1회 재실행")
                 elif ui2_waiting_for_normal_channel and devlogic_last_is_normal_channel:
                     ui2_waiting_for_normal_channel = False
                     ui2_waiting_for_selection = True
