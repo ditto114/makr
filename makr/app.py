@@ -9,15 +9,14 @@ from __future__ import annotations
 import importlib
 import json
 import re
-import shutil
 import subprocess
 import sys
 import threading
 import time
 import tkinter as tk
 from dataclasses import dataclass
-from queue import Empty, Queue
 from pathlib import Path
+from queue import Empty, Queue
 from tkinter import messagebox, ttk
 from typing import Callable
 
@@ -27,7 +26,7 @@ import pyautogui
 from pynput import keyboard, mouse
 
 APP_STATE_PATH = Path(__file__).with_name("app_state.json")
-NEW_CHANNEL_SOUND_PATH = Path(__file__).with_name("new.mp3")
+NEW_CHANNEL_SOUND_PATH = Path(__file__).with_name("new.wav")
 
 # pyautogui의 기본 지연(0.1초)을 제거해 클릭 간 딜레이를 사용자 설정값에만 의존하도록 합니다.
 pyautogui.PAUSE = 0
@@ -163,48 +162,23 @@ class SoundPlayer:
         if not self._sound_path.exists():
             return
         suffix = self._sound_path.suffix.lower()
+        if suffix != ".wav":
+            return
 
         def _run() -> None:
-            if self._winsound is not None and suffix == ".wav":
+            if self._winsound is not None:
                 self._winsound.PlaySound(
                     str(self._sound_path),
-                    self._winsound.SND_FILENAME,
+                    self._winsound.SND_FILENAME | self._winsound.SND_ASYNC,
                 )
                 return
-            if sys.platform.startswith("win"):
+            if sys.platform == "darwin":
                 subprocess.run(
-                    [
-                        "powershell",
-                        "-NoProfile",
-                        "-Command",
-                        (
-                            "$player = New-Object -ComObject WMPlayer.OCX.7;"
-                            f"$player.URL = '{self._sound_path}';"
-                            "$player.controls.play();"
-                            "Start-Sleep -Milliseconds 500;"
-                        ),
-                    ],
+                    ["afplay", str(self._sound_path)],
                     check=False,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                 )
-                return
-            player = None
-            for cmd in ("afplay", "ffplay", "mpg123", "play", "aplay"):
-                if shutil.which(cmd):
-                    player = cmd
-                    break
-            if player is None:
-                return
-            command = [player, str(self._sound_path)]
-            if player == "ffplay":
-                command = [player, "-nodisp", "-autoexit", str(self._sound_path)]
-            subprocess.run(
-                command,
-                check=False,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
 
         threading.Thread(target=_run, daemon=True).start()
 
