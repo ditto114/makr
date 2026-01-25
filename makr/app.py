@@ -257,12 +257,14 @@ class MacroController:
         status_var: tk.StringVar,
         delay_config: DelayConfig,
         label_map: dict[str, str],
+        use_esc_click: Callable[[], bool],
     ) -> None:
         self.entries = entries
         self.status_var = status_var
         self.current_step = 1
         self.delay_config = delay_config
         self.label_map = label_map
+        self.use_esc_click = use_esc_click
         self._update_status()
 
     def _update_status(self) -> None:
@@ -307,7 +309,13 @@ class MacroController:
     def reset_and_run_first(self, *, newline_mode: bool = False) -> None:
         """다시 단축키 콜백: Esc 입력 후 1단계를 재실행."""
         self._sleep_ms(self.delay_config.f2_before_esc())
-        self._press_key("esc", label="초기화 ESC")
+        if self.use_esc_click():
+            esc_point = self._get_point("esc_click")
+            if esc_point is None:
+                return
+            self._click_point(esc_point, label="초기화 Esc 클릭")
+        else:
+            self._press_key("esc", label="초기화 ESC")
         self.current_step = 1
         self._update_status()
         self._run_step_one()
@@ -390,6 +398,7 @@ def build_gui() -> None:
     )
     channel_timeout_var = tk.StringVar(value=str(saved_state.get("channel_timeout_ms", "700")))
     newline_var = tk.BooleanVar(value=bool(saved_state.get("newline_after_pos2", False)))
+    esc_click_var = tk.BooleanVar(value=bool(saved_state.get("esc_click_enabled", False)))
     try:
         pos3_mode_initial = int(saved_state.get("pos3_mode", 1))
     except (TypeError, ValueError):
@@ -466,6 +475,7 @@ def build_gui() -> None:
         "pos2": "채널",
         "pos3": "열",
         "pos4": "∇",
+        "esc_click": "Esc 클릭",
     }
 
     def add_coordinate_row(
@@ -637,11 +647,16 @@ def build_gui() -> None:
     pos3_mode_button.pack(side="left", padx=(6, 0))
     newline_checkbox = tk.Checkbutton(ui1_top, text="줄바꿈", variable=newline_var)
     newline_checkbox.pack(side="right", padx=(0, 12))
+    esc_click_checkbox = tk.Checkbutton(
+        ui1_top, text="Esc를 클릭으로 대체", variable=esc_click_var
+    )
+    esc_click_checkbox.pack(side="right", padx=(0, 6))
 
     add_coordinate_row(ui1_frame, "메뉴", "pos1", entries_ui1)
     add_coordinate_row(ui1_frame, "채널", "pos2", entries_ui1)
     add_pos3_row(ui1_frame, "열")
     add_coordinate_row(ui1_frame, "∇", "pos4", entries_ui1)
+    add_coordinate_row(ui1_frame, "Esc", "esc_click", entries_ui1)
 
     delay_frame_ui1 = tk.LabelFrame(ui1_frame, text="딜레이 설정")
     delay_frame_ui1.pack(fill="x", padx=10, pady=(0, 10))
@@ -725,7 +740,13 @@ def build_gui() -> None:
         ),
     )
 
-    controller = MacroController(entries_ui1, status_var, delay_config, ui1_label_map)
+    controller = MacroController(
+        entries_ui1,
+        status_var,
+        delay_config,
+        ui1_label_map,
+        use_esc_click=esc_click_var.get,
+    )
 
     def store_current_pos3_mode_values() -> None:
         if "pos3" not in entries_ui1:
@@ -1242,6 +1263,7 @@ def build_gui() -> None:
             "channel_watch_interval_ms": channel_watch_interval_var.get(),
             "channel_timeout_ms": channel_timeout_var.get(),
             "newline_after_pos2": newline_var.get(),
+            "esc_click_enabled": esc_click_var.get(),
             "ui2_automation_enabled": ui2_automation_var.get(),
             "ui2_test_new_channel": ui2_test_new_channel_var.get(),
         }
