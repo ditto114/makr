@@ -7,10 +7,10 @@ macOS에서 최상단에 고정된 창을 제공하며, F9/F10 단축키로
 from __future__ import annotations
 
 import importlib
+import importlib.util
 import json
 import os
 import re
-import subprocess
 import sys
 import threading
 import time
@@ -21,7 +21,38 @@ from queue import Empty, Queue
 from tkinter import messagebox, ttk
 from typing import Callable
 
+from makr.constants import (
+    DEFAULT_CHANNEL_TIMEOUT_MS,
+    DEFAULT_CHANNEL_WATCH_INTERVAL_MS,
+    DEFAULT_F1_BEFORE_ENTER_MS,
+    DEFAULT_F1_BEFORE_POS3_MS,
+    DEFAULT_F1_NEWLINE_BEFORE_ENTER_MS,
+    DEFAULT_F1_NEWLINE_BEFORE_POS3_MS,
+    DEFAULT_F1_NEWLINE_BEFORE_POS4_MS,
+    DEFAULT_F1_REPEAT_COUNT,
+    DEFAULT_F2_BEFORE_ESC_MS,
+    DEFAULT_F2_BEFORE_POS1_MS,
+    DEFAULT_F2_BEFORE_POS2_MS,
+    DEFAULT_F4_BEFORE_ENTER_MS,
+    DEFAULT_F4_BETWEEN_POS11_POS12_MS,
+    DEFAULT_F5_INTERVAL_MS,
+    DEFAULT_F6_INTERVAL_MS,
+    DEVLOGIC_SEGMENT_LENGTH,
+    F4_DEFAULT_INTERVAL_SEC,
+    F4_DEFAULT_REPEAT_COUNT,
+    POS3_MODE_MAX,
+    POS3_MODE_MIN,
+)
 from makr.packet import PacketCaptureManager
+from makr.sound import SoundPlayer
+from makr.state import DevLogicState, UI2AutomationState
+from makr.ui_components import (
+    CoordinateRow,
+    DelaySettingsFrame,
+    Pos3Row,
+    TabPanel,
+)
+from makr.utils import delay_to_seconds, get_point, sleep_ms
 
 import pyautogui
 from pynput import keyboard, mouse
@@ -179,75 +210,6 @@ class RepeatingActionTask:
         return self._thread is not None and self._thread.is_alive()
 
 
-class SoundPlayer:
-    def __init__(self, sound_path: Path, *, volume: float = 1.0) -> None:
-        self._sound_path = sound_path
-        self._volume = max(0.0, min(volume, 1.0))
-        self._winsound = (
-            importlib.import_module("winsound")
-            if importlib.util.find_spec("winsound")
-            else None
-        )
-        self._cached_wav_bytes: bytes | None = None
-
-    def _load_scaled_wav(self) -> bytes | None:
-        if self._cached_wav_bytes is not None:
-            return self._cached_wav_bytes
-        if not self._sound_path.exists():
-            return None
-        try:
-            import audioop
-            import io
-            import wave
-        except ImportError:
-            return None
-        try:
-            with wave.open(str(self._sound_path), "rb") as wav_file:
-                params = wav_file.getparams()
-                frames = wav_file.readframes(params.nframes)
-            if self._volume != 1.0:
-                frames = audioop.mul(frames, params.sampwidth, self._volume)
-            buffer = io.BytesIO()
-            with wave.open(buffer, "wb") as output_wav:
-                output_wav.setparams(params)
-                output_wav.writeframes(frames)
-            self._cached_wav_bytes = buffer.getvalue()
-        except (OSError, wave.Error):
-            return None
-        return self._cached_wav_bytes
-
-    def play_once(self) -> None:
-        if not self._sound_path.exists():
-            return
-        suffix = self._sound_path.suffix.lower()
-        if suffix != ".wav":
-            return
-
-        def _run() -> None:
-            if self._winsound is not None:
-                wav_bytes = self._load_scaled_wav()
-                if wav_bytes is not None:
-                    self._winsound.PlaySound(
-                        wav_bytes,
-                        self._winsound.SND_MEMORY | self._winsound.SND_ASYNC,
-                    )
-                    return
-                self._winsound.PlaySound(
-                    str(self._sound_path),
-                    self._winsound.SND_FILENAME | self._winsound.SND_ASYNC,
-                )
-                return
-            if sys.platform == "darwin":
-                subprocess.run(
-                    ["afplay", "-v", f"{self._volume:.2f}", str(self._sound_path)],
-                    check=False,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-
-        threading.Thread(target=_run, daemon=True).start()
-
-
 class MacroController:
     """실행 순서를 관리하고 GUI 콜백을 제공합니다."""
 
@@ -271,15 +233,8 @@ class MacroController:
         self.status_var.set(f"다음 실행 단계: {self.current_step}단계")
 
     def _get_point(self, key: str) -> tuple[int, int] | None:
-        x_entry, y_entry = self.entries[key]
         label = self.label_map.get(key, key)
-        try:
-            x_val = int(x_entry.get())
-            y_val = int(y_entry.get())
-        except ValueError:
-            messagebox.showerror("좌표 오류", f"{label} 좌표를 정수로 입력해주세요.")
-            return None
-        return x_val, y_val
+        return get_point(self.entries, key, label)
 
     def _click_point(self, point: tuple[int, int], *, label: str | None = None) -> None:
         x_val, y_val = point
@@ -288,13 +243,8 @@ class MacroController:
     def _press_key(self, key: str, *, label: str | None = None) -> None:
         pyautogui.press(key)
 
-    def _delay_seconds(self, delay_ms: int) -> float:
-        return max(delay_ms, 0) / 1000
-
     def _sleep_ms(self, delay_ms: int) -> None:
-        delay_sec = self._delay_seconds(delay_ms)
-        if delay_sec:
-            time.sleep(delay_sec)
+        sleep_ms(delay_ms)
 
     def run_step(self, *, newline_mode: bool = False) -> None:
         """실행 단축키 콜백: 현재 단계 수행 후 다음 단계로 이동."""
@@ -368,43 +318,64 @@ def build_gui() -> None:
     devlogic_alert_var = tk.StringVar(value="")
     devlogic_packet_var = tk.StringVar(value="")
     ui_mode = tk.StringVar(value=str(saved_state.get("ui_mode", "1")))
-    f2_before_esc_var = tk.StringVar(value=str(saved_state.get("delay_f2_before_esc_ms", "0")))
-    f2_before_pos1_var = tk.StringVar(value=str(saved_state.get("delay_f2_before_pos1_ms", "55")))
-    f2_before_pos2_var = tk.StringVar(
-        value=str(saved_state.get("delay_f2_before_pos2_ms", saved_state.get("click_delay_ms", "55")))
+    f2_before_esc_var = tk.StringVar(
+        value=str(saved_state.get("delay_f2_before_esc_ms", DEFAULT_F2_BEFORE_ESC_MS))
     )
-    f1_before_pos3_var = tk.StringVar(value=str(saved_state.get("delay_f1_before_pos3_ms", "15")))
-    f1_before_enter_var = tk.StringVar(value=str(saved_state.get("delay_f1_before_enter_ms", "15")))
-    f1_repeat_count_var = tk.StringVar(value=str(saved_state.get("f1_repeat_count", "8")))
+    f2_before_pos1_var = tk.StringVar(
+        value=str(saved_state.get("delay_f2_before_pos1_ms", DEFAULT_F2_BEFORE_POS1_MS))
+    )
+    f2_before_pos2_var = tk.StringVar(
+        value=str(
+            saved_state.get(
+                "delay_f2_before_pos2_ms",
+                saved_state.get("click_delay_ms", DEFAULT_F2_BEFORE_POS2_MS),
+            )
+        )
+    )
+    f1_before_pos3_var = tk.StringVar(
+        value=str(saved_state.get("delay_f1_before_pos3_ms", DEFAULT_F1_BEFORE_POS3_MS))
+    )
+    f1_before_enter_var = tk.StringVar(
+        value=str(saved_state.get("delay_f1_before_enter_ms", DEFAULT_F1_BEFORE_ENTER_MS))
+    )
+    f1_repeat_count_var = tk.StringVar(
+        value=str(saved_state.get("f1_repeat_count", DEFAULT_F1_REPEAT_COUNT))
+    )
     f1_newline_before_pos4_var = tk.StringVar(
-        value=str(saved_state.get("delay_f1_newline_before_pos4_ms", "170"))
+        value=str(saved_state.get("delay_f1_newline_before_pos4_ms", DEFAULT_F1_NEWLINE_BEFORE_POS4_MS))
     )
     f1_newline_before_pos3_var = tk.StringVar(
-        value=str(saved_state.get("delay_f1_newline_before_pos3_ms", "30"))
+        value=str(saved_state.get("delay_f1_newline_before_pos3_ms", DEFAULT_F1_NEWLINE_BEFORE_POS3_MS))
     )
     f1_newline_before_enter_var = tk.StringVar(
-        value=str(saved_state.get("delay_f1_newline_before_enter_ms", "15"))
+        value=str(saved_state.get("delay_f1_newline_before_enter_ms", DEFAULT_F1_NEWLINE_BEFORE_ENTER_MS))
     )
     f4_between_pos11_pos12_var = tk.StringVar(
-        value=str(saved_state.get("delay_f4_between_pos11_pos12_ms", "25"))
+        value=str(saved_state.get("delay_f4_between_pos11_pos12_ms", DEFAULT_F4_BETWEEN_POS11_POS12_MS))
     )
     f4_before_enter_var = tk.StringVar(
-        value=str(saved_state.get("delay_f4_before_enter_ms", "55"))
+        value=str(saved_state.get("delay_f4_before_enter_ms", DEFAULT_F4_BEFORE_ENTER_MS))
     )
-    f5_interval_var = tk.StringVar(value=str(saved_state.get("delay_f5_interval_ms", "25")))
-    f6_interval_var = tk.StringVar(value=str(saved_state.get("delay_f6_interval_ms", "25")))
+    f5_interval_var = tk.StringVar(
+        value=str(saved_state.get("delay_f5_interval_ms", DEFAULT_F5_INTERVAL_MS))
+    )
+    f6_interval_var = tk.StringVar(
+        value=str(saved_state.get("delay_f6_interval_ms", DEFAULT_F6_INTERVAL_MS))
+    )
     channel_watch_interval_var = tk.StringVar(
-        value=str(saved_state.get("channel_watch_interval_ms", "20"))
+        value=str(saved_state.get("channel_watch_interval_ms", DEFAULT_CHANNEL_WATCH_INTERVAL_MS))
     )
-    channel_timeout_var = tk.StringVar(value=str(saved_state.get("channel_timeout_ms", "700")))
+    channel_timeout_var = tk.StringVar(
+        value=str(saved_state.get("channel_timeout_ms", DEFAULT_CHANNEL_TIMEOUT_MS))
+    )
     newline_var = tk.BooleanVar(value=bool(saved_state.get("newline_after_pos2", False)))
     esc_click_var = tk.BooleanVar(value=bool(saved_state.get("esc_click_enabled", False)))
     try:
-        pos3_mode_initial = int(saved_state.get("pos3_mode", 1))
+        pos3_mode_initial = int(saved_state.get("pos3_mode", POS3_MODE_MIN))
     except (TypeError, ValueError):
-        pos3_mode_initial = 1
-    if pos3_mode_initial not in range(1, 7):
-        pos3_mode_initial = 1
+        pos3_mode_initial = POS3_MODE_MIN
+    if pos3_mode_initial not in range(POS3_MODE_MIN, POS3_MODE_MAX + 1):
+        pos3_mode_initial = POS3_MODE_MIN
     pos3_mode_var = tk.IntVar(value=pos3_mode_initial)
     ui2_automation_var = tk.BooleanVar(
         value=bool(saved_state.get("ui2_automation_enabled", False))
@@ -449,15 +420,19 @@ def build_gui() -> None:
         return lambda: _parse_positive_int(var, label, fallback)
 
     def get_channel_watch_interval_ms() -> int:
-        return _parse_delay_ms(channel_watch_interval_var, "채널 감시 주기", 20)
+        return _parse_delay_ms(
+            channel_watch_interval_var,
+            "채널 감시 주기",
+            DEFAULT_CHANNEL_WATCH_INTERVAL_MS,
+        )
 
     def get_channel_timeout_ms() -> int:
-        return _parse_delay_ms(channel_timeout_var, "채널 타임아웃", 700)
+        return _parse_delay_ms(channel_timeout_var, "채널 타임아웃", DEFAULT_CHANNEL_TIMEOUT_MS)
 
     pos3_mode_coordinates: dict[int, dict[str, str]] = {}
     saved_coordinates = saved_state.get("coordinates", {})
     legacy_pos3_coords = saved_coordinates.get("pos3", {})
-    for mode in range(1, 7):
+    for mode in range(POS3_MODE_MIN, POS3_MODE_MAX + 1):
         mode_key = f"pos3_{mode}"
         coords = saved_coordinates.get(mode_key, {})
         if not coords and mode == 1 and legacy_pos3_coords:
@@ -761,11 +736,11 @@ def build_gui() -> None:
         pos3_mode_label_var.set(f"선택할 열: {get_pos3_mode_name(pos3_mode_var.get())}")
 
     def apply_newline_for_pos3_mode() -> None:
-        newline_var.set(pos3_mode_var.get() == 1)
+        newline_var.set(pos3_mode_var.get() == POS3_MODE_MIN)
 
     def set_pos3_mode(new_mode: int) -> None:
         store_current_pos3_mode_values()
-        normalized_mode = ((new_mode - 1) % 6) + 1
+        normalized_mode = ((new_mode - 1) % POS3_MODE_MAX) + 1
         pos3_mode_var.set(normalized_mode)
         coords = pos3_mode_coordinates.get(normalized_mode, {"x": "0", "y": "0"})
         x_entry, y_entry = entries_ui1["pos3"]
@@ -874,9 +849,9 @@ def build_gui() -> None:
     pos3_mode_button.configure(command=cycle_pos3_mode)
 
     def enforce_newline_mode() -> None:
-        if pos3_mode_var.get() == 1 and not newline_var.get():
+        if pos3_mode_var.get() == POS3_MODE_MIN and not newline_var.get():
             newline_var.set(True)
-        elif pos3_mode_var.get() != 1 and newline_var.get():
+        elif pos3_mode_var.get() != POS3_MODE_MIN and newline_var.get():
             newline_var.set(False)
 
     newline_checkbox.configure(command=enforce_newline_mode)
@@ -885,15 +860,10 @@ def build_gui() -> None:
     ui2_repeater_f6 = RepeatingClickTask(set_status_async)
     ui2_f4_automation_task = RepeatingActionTask(set_status_async)
     new_channel_sound_player = SoundPlayer(NEW_CHANNEL_SOUND_PATH, volume=0.5)
-    devlogic_last_detected_at: float | None = None
-    devlogic_last_packet = ""
-    devlogic_last_is_new_channel = False
-    devlogic_last_alert_message = ""
-    devlogic_last_alert_packet = ""
-    ui2_automation_active = False
-    ui2_waiting_for_new_channel = False
-    ui2_waiting_for_normal_channel = False
-    ui2_waiting_for_selection = False
+
+    # UI2 자동화 상태를 클래스로 캡슐화
+    ui2_state = UI2AutomationState()
+    devlogic_state = DevLogicState()
 
     class BeepNotifier:
         def __init__(self, root_widget: tk.Tk) -> None:
@@ -935,9 +905,9 @@ def build_gui() -> None:
         if start == -1:
             return "", False, False
         segment_start = start + len("DevLogic")
-        segment = packet_text[segment_start : segment_start + 25]
+        segment = packet_text[segment_start : segment_start + DEVLOGIC_SEGMENT_LENGTH]
         sanitized = re.sub(r"[^0-9A-Za-z가-힣]", "-", segment)
-        display = sanitized[:25]
+        display = sanitized[:DEVLOGIC_SEGMENT_LENGTH]
         if not display:
             return "", False, False
         has_alpha = bool(re.search(r"[A-Za-z]", display))
@@ -948,19 +918,7 @@ def build_gui() -> None:
         return display, is_new_channel, is_normal_channel
 
     def _get_ui2_point(key: str, label: str) -> tuple[int, int] | None:
-        x_entry, y_entry = entries_ui2[key]
-        try:
-            x_val = int(x_entry.get())
-            y_val = int(y_entry.get())
-        except ValueError:
-            messagebox.showerror("좌표 오류", f"{label} 좌표를 정수로 입력해주세요.")
-            return None
-        return x_val, y_val
-
-    def _sleep_ms_ui2(delay_ms: int) -> None:
-        delay_sec = max(delay_ms, 0) / 1000
-        if delay_sec:
-            time.sleep(delay_sec)
+        return get_point(entries_ui2, key, label)
 
     def _build_ui2_f4_action() -> Callable[[], None] | None:
         pos11 = _get_ui2_point("pos11", "···")
@@ -972,9 +930,9 @@ def build_gui() -> None:
 
         def _run() -> None:
             pyautogui.click(*pos11)
-            _sleep_ms_ui2(delay_between)
+            sleep_ms(delay_between)
             pyautogui.click(*pos12)
-            _sleep_ms_ui2(delay_before_enter)
+            sleep_ms(delay_before_enter)
             pyautogui.press("enter")
 
         return _run
@@ -982,8 +940,8 @@ def build_gui() -> None:
     def run_ui2_f4_batch(
         action: Callable[[], None],
         *,
-        repeat_count: int = 10,
-        interval_sec: float = 0.2,
+        repeat_count: int = F4_DEFAULT_REPEAT_COUNT,
+        interval_sec: float = F4_DEFAULT_INTERVAL_SEC,
         start_message: str | None = None,
         stop_message: str | None = None,
     ) -> None:
@@ -1001,15 +959,8 @@ def build_gui() -> None:
         threading.Thread(target=_run, daemon=True).start()
 
     def stop_ui2_automation(message: str | None = None) -> None:
-        nonlocal ui2_automation_active
-        nonlocal ui2_waiting_for_new_channel
-        nonlocal ui2_waiting_for_normal_channel
-        nonlocal ui2_waiting_for_selection
-        ui2_automation_active = False
-        ui2_waiting_for_new_channel = False
-        ui2_waiting_for_normal_channel = False
-        ui2_waiting_for_selection = False
-        clear_ui2_set_state()
+        ui2_state.reset()
+        ui2_state.clear_set_state()
         ui2_f4_automation_task.stop()
         if ui2_repeater_f5.stop():
             set_status_async("F5: 중지되었습니다.")
@@ -1019,21 +970,14 @@ def build_gui() -> None:
             set_status_async(message)
 
     def start_ui2_automation() -> None:
-        nonlocal ui2_automation_active
-        nonlocal ui2_waiting_for_new_channel
-        nonlocal ui2_waiting_for_normal_channel
-        nonlocal ui2_waiting_for_selection
-        if ui2_automation_active:
+        if ui2_state.active:
             set_status_async("자동화 모드: 이미 실행 중입니다.")
             return
         if ui2_repeater_f5.stop():
             set_status_async("F5: 중지되었습니다.")
         if ui2_repeater_f6.stop():
             set_status_async("F6: 중지되었습니다.")
-        ui2_waiting_for_new_channel = True
-        ui2_waiting_for_normal_channel = False
-        ui2_waiting_for_selection = False
-        ui2_automation_active = True
+        ui2_state.start_waiting_for_new_channel()
         action = _build_ui2_f4_action()
         if action is None:
             return
@@ -1041,17 +985,10 @@ def build_gui() -> None:
         run_ui2_f4_batch(action)
 
     def restart_ui2_f4_cycle() -> None:
-        nonlocal ui2_automation_active
-        nonlocal ui2_waiting_for_new_channel
-        nonlocal ui2_waiting_for_normal_channel
-        nonlocal ui2_waiting_for_selection
         action = _build_ui2_f4_action()
         if action is None:
             return
-        ui2_waiting_for_new_channel = True
-        ui2_waiting_for_normal_channel = False
-        ui2_waiting_for_selection = False
-        ui2_automation_active = True
+        ui2_state.start_waiting_for_new_channel()
         start_new_ui2_set()
         run_ui2_f4_batch(action)
 
@@ -1132,8 +1069,6 @@ def build_gui() -> None:
     ui2_record_window: tk.Toplevel | None = None
     ui2_record_treeview: ttk.Treeview | None = None
     ui2_record_items: list[tuple[int, str, str]] = []
-    ui2_set_index = 0
-    ui2_current_set_started_at: float | None = None
 
     def format_timestamp(ts: float) -> str:
         ts_int = int(ts)
@@ -1165,24 +1100,16 @@ def build_gui() -> None:
             )
 
     def start_new_ui2_set() -> None:
-        nonlocal ui2_set_index
-        nonlocal ui2_current_set_started_at
-        ui2_set_index += 1
-        ui2_current_set_started_at = time.time()
-        set_status_async(f"{ui2_set_index}세트 시작")
+        ui2_state.start_new_set()
+        set_status_async(f"{ui2_state.set_index}세트 시작")
 
     def finish_ui2_set(result: str, note: str | None = None) -> None:
-        nonlocal ui2_current_set_started_at
-        if ui2_current_set_started_at is None:
+        started_at = ui2_state.finish_set()
+        if started_at is None:
             return
-        add_ui2_record_item(ui2_set_index, ui2_current_set_started_at, result)
-        ui2_current_set_started_at = None
+        add_ui2_record_item(ui2_state.set_index, started_at, result)
         suffix = f" - {note}" if note else ""
-        set_status_async(f"{ui2_set_index}세트 종료 ({result}){suffix}")
-
-    def clear_ui2_set_state() -> None:
-        nonlocal ui2_current_set_started_at
-        ui2_current_set_started_at = None
+        set_status_async(f"{ui2_state.set_index}세트 종료 ({result}){suffix}")
 
     class ChannelSegmentRecorder:
         anchor_keyword = "ChannelName"
@@ -1238,7 +1165,7 @@ def build_gui() -> None:
         coordinates: dict[str, dict[str, str]] = {}
         for key, (x_entry, y_entry) in {**entries_ui1, **entries_ui2}.items():
             coordinates[key] = {"x": x_entry.get(), "y": y_entry.get()}
-        for mode in range(1, 7):
+        for mode in range(POS3_MODE_MIN, POS3_MODE_MAX + 1):
             coordinates[f"pos3_{mode}"] = pos3_mode_coordinates.get(
                 mode,
                 {"x": "0", "y": "0"},
@@ -1682,7 +1609,7 @@ def build_gui() -> None:
                 self._run_on_main(controller._update_status)
 
         def _delay_seconds(self, delay_ms: int) -> float:
-            return max(delay_ms, 0) / 1000
+            return delay_to_seconds(delay_ms)
 
     channel_detection_sequence = ChannelDetectionSequence()
 
@@ -1698,82 +1625,73 @@ def build_gui() -> None:
     channel_segment_recorder = ChannelSegmentRecorder(handle_captured_pattern)
 
     def process_packet_detection(text: str) -> None:
-        nonlocal devlogic_last_detected_at
-        nonlocal devlogic_last_packet
-        nonlocal devlogic_last_is_new_channel
-        nonlocal devlogic_last_alert_message
-        nonlocal devlogic_last_alert_packet
-        nonlocal ui2_automation_active
-        nonlocal ui2_waiting_for_new_channel
-        nonlocal ui2_waiting_for_normal_channel
-        nonlocal ui2_waiting_for_selection
         if "DevLogic" in text:
-            devlogic_last_detected_at = time.time()
             (
-                devlogic_last_packet,
-                devlogic_last_is_new_channel,
-                devlogic_last_is_normal_channel,
+                packet,
+                is_new_channel,
+                is_normal_channel,
             ) = _format_devlogic_packet(text)
+            alert_prefix = "신규채널!!" if is_new_channel else "채널 감지"
+            devlogic_state.update(
+                packet=packet,
+                is_new_channel=is_new_channel,
+                alert_message=alert_prefix,
+                alert_packet=packet,
+            )
+            devlogic_packet_var.set(packet)
+
             forced_new_channel = (
-                ui2_automation_active
+                ui2_state.active
                 and ui2_automation_var.get()
                 and ui2_test_new_channel_var.get()
-                and devlogic_last_is_normal_channel
+                and is_normal_channel
             )
-            effective_new_channel = devlogic_last_is_new_channel or forced_new_channel
-            alert_prefix = "신규채널!!" if devlogic_last_is_new_channel else "채널 감지"
-            devlogic_last_alert_message = alert_prefix
-            devlogic_last_alert_packet = devlogic_last_packet
-            devlogic_packet_var.set(devlogic_last_packet)
-            if ui2_automation_active and ui2_automation_var.get():
-                if ui2_waiting_for_new_channel and effective_new_channel:
+            effective_new_channel = is_new_channel or forced_new_channel
+
+            if ui2_state.active and ui2_automation_var.get():
+                if ui2_state.waiting_for_new_channel and effective_new_channel:
                     new_channel_sound_player.play_once()
-                    ui2_waiting_for_new_channel = False
-                    ui2_waiting_for_normal_channel = True
-                    ui2_waiting_for_selection = False
+                    ui2_state.transition_to_normal_channel_wait()
                     ui2_f4_automation_task.stop()
                     finish_ui2_set("성공", "일반 채널 대기")
                     beep_notifier.start(3)
-                elif ui2_waiting_for_new_channel and devlogic_last_is_normal_channel:
+                elif ui2_state.waiting_for_new_channel and is_normal_channel:
                     finish_ui2_set("실패", "F4 로직 재실행")
                     restart_ui2_f4_logic()
-                elif ui2_waiting_for_normal_channel and devlogic_last_is_normal_channel:
-                    ui2_waiting_for_normal_channel = False
-                    ui2_waiting_for_selection = True
+                elif ui2_state.waiting_for_normal_channel and is_normal_channel:
+                    ui2_state.transition_to_selection_wait()
                     set_status_async("일반채널 감지: F5 실행 후 선택창 대기")
                     start_ui2_normal_channel_sequence()
             elif not ui2_automation_var.get():
-                ui2_waiting_for_new_channel = False
-                ui2_waiting_for_normal_channel = False
-                ui2_waiting_for_selection = False
+                ui2_state.clear_all_waits()
+
         if "AdminLevel" in text:
-            devlogic_last_detected_at = time.time()
-            devlogic_last_alert_message = "선택창 감지"
-            devlogic_last_alert_packet = ""
+            devlogic_state.update_admin_level()
             devlogic_packet_var.set("")
-            if ui2_automation_active and ui2_waiting_for_selection:
-                ui2_waiting_for_selection = False
+            if ui2_state.active and ui2_state.waiting_for_selection:
+                ui2_state.clear_selection_wait()
                 set_status_async("선택창 감지: F6 실행 중 (F6 재입력 시 중단)")
                 run_on_ui("2", lambda: run_ui2_f6(force_start=True))
+
         channel_segment_recorder.feed(text)
 
     def poll_devlogic_alert() -> None:
         interval_ms = get_channel_watch_interval_ms()
-        visible = ui_mode.get() == "2" and devlogic_last_detected_at is not None
+        visible = ui_mode.get() == "2" and devlogic_state.last_detected_at is not None
         if visible:
-            elapsed_sec = max(0, int(time.time() - devlogic_last_detected_at))
+            elapsed_sec = max(0, int(time.time() - devlogic_state.last_detected_at))
             elapsed_suffix = f"({elapsed_sec}초 전)"
-            if devlogic_last_alert_message and devlogic_last_alert_packet:
+            if devlogic_state.last_alert_message and devlogic_state.last_alert_packet:
                 devlogic_alert_var.set(
-                    f"{devlogic_last_alert_message} {devlogic_last_alert_packet} {elapsed_suffix}"
+                    f"{devlogic_state.last_alert_message} {devlogic_state.last_alert_packet} {elapsed_suffix}"
                 )
-            elif devlogic_last_alert_message:
-                devlogic_alert_var.set(f"{devlogic_last_alert_message} {elapsed_suffix}")
+            elif devlogic_state.last_alert_message:
+                devlogic_alert_var.set(f"{devlogic_state.last_alert_message} {elapsed_suffix}")
             else:
                 devlogic_alert_var.set("")
         else:
             devlogic_alert_var.set("")
-        devlogic_packet_var.set(devlogic_last_alert_packet if visible else "")
+        devlogic_packet_var.set(devlogic_state.last_alert_packet if visible else "")
         root.after(max(interval_ms, 50), poll_devlogic_alert)
 
     packet_manager = PacketCaptureManager(
@@ -1850,7 +1768,7 @@ def build_gui() -> None:
             run_on_ui("2", run_ui2_f4)
         elif key == keyboard.Key.f12:
             def _handle_f12() -> None:
-                if ui2_automation_active and ui2_automation_var.get():
+                if ui2_state.active and ui2_automation_var.get():
                     stop_ui2_automation("자동화 모드: F12 입력으로 중단되었습니다.")
                 else:
                     run_ui2_f6()
