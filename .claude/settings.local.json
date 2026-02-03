@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git -C \"C:\\\\Users\\\\utor9\\\\Desktop\\\\makr-1\" log --oneline)",
+      "Bash(python -c:*)",
+      "Bash(find:*)"
+    ]
+  }
+}
