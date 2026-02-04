@@ -114,6 +114,7 @@ class ChannelDetectionSequence:
         try:
             while self.running:
                 self._set_status("F10: F2 기능 실행 중…")
+                self._clear_queue()
                 self._run_on_main(
                     lambda: self.controller.reset_and_run_first(
                         newline_mode=self.newline_mode
@@ -121,7 +122,6 @@ class ChannelDetectionSequence:
                 )
 
                 self._set_status("F10: 채널명 감시 중…")
-                self._clear_queue()
                 timeout_sec = self._delay_seconds(self.get_channel_timeout_ms())
                 first_detection = self._wait_for_detection(timeout_sec)
                 self.last_detected_at = first_detection[0] if first_detection else None
